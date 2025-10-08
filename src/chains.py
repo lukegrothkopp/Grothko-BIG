@@ -1,11 +1,8 @@
-import math
-import datetime as dt
+from __future__ import annotations
+import json, math, datetime as dt
+from typing import Dict, Any, List
 import numpy as np
 import pandas as pd
-
-from __future__ import annotations
-import json
-from typing import Dict, Any, List
 from langchain_openai import ChatOpenAI
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
@@ -16,18 +13,14 @@ from .logger import log_interaction
 from .doc_index import retrieve as doc_retrieve
 
 def _json_default(o):
-    if isinstance(o, (pd.Timestamp, dt.datetime, dt.date)):
-        return o.isoformat()
-    if isinstance(o, np.integer):
-        return int(o)
+    if isinstance(o, (pd.Timestamp, dt.datetime, dt.date)): return o.isoformat()
+    if isinstance(o, np.integer): return int(o)
     if isinstance(o, np.floating):
         x = float(o)
-        if math.isnan(x) or math.isinf(x):
-            return None
+        if math.isnan(x) or math.isinf(x): return None
         return x
-    if isinstance(o, np.ndarray):
-        return o.tolist()
-    return str(o)  # last-resort fallback
+    if isinstance(o, np.ndarray): return o.tolist()
+    return str(o)
 
 class InsightForgeAssistant:
     def __init__(self, df, user_id: str = "default", model_name: str = "gpt-4o-mini", temperature: float = 0.2):
@@ -66,18 +59,10 @@ class InsightForgeAssistant:
     def _retrieve_docs(self, question: str, k: int = 4) -> List[str]:
         return doc_retrieve(question, k=k)
 
-    from .logger import log_interaction
-    try:
-        safe_stats = json.loads(safe_stats_str)   # round-trip to ensure purity
-    except Exception:
-        safe_stats = stats
-        log_interaction(self.user_id, question, answer, safe_stats, docs)
-
     def answer(self, question: str) -> str:
         plan = self._plan(question)
         stats = self._retrieve_stats(plan)
         docs = self._retrieve_docs(question, k=4)
-        out = self.answer_chain.invoke({
         safe_stats_str = json.dumps(stats, default=_json_default)
         out = self.answer_chain.invoke({
             "question": question,
@@ -85,8 +70,10 @@ class InsightForgeAssistant:
             "doc_snippets": "\n\n---\n".join(docs) if docs else "None",
         })
         answer = out.get("text", str(out))
+        try:
+            safe_stats = json.loads(safe_stats_str)
+        except Exception:
+            safe_stats = stats
         save_memory(self.user_id, self.memory)
-        log_interaction(self.user_id, question, answer, stats, docs)
+        log_interaction(self.user_id, question, answer, safe_stats, docs)
         return answer
-
-    
