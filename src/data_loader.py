@@ -22,7 +22,7 @@ SYNONYMS = {
     "product": ["product","sku","item","product_name","product_id","name"],
     "customer_id": ["customer_id","customer","user_id","account_id","cid","shopper_id","client_id"],
     "age": ["age","customer_age"],
-    "gender": ["gender","sex"],
+    "gender": ["gender","sex","customer_gender"],
     "quantity": ["quantity","qty","units","unit_qty","count"],
     "sales": ["sales","revenue","amount","total","total_sales","net_sales","gmv","order_total"],
     "discount_pct": ["discount_pct","discount_percent","discount_rate","pct_discount","percent_off","discount","promo_pct","promo_percent"],
@@ -45,58 +45,68 @@ def _coerce_numeric(s: pd.Series) -> pd.Series:
 
 def prepare_any_sales_dataframe(df_in: pd.DataFrame) -> pd.DataFrame:
     """
-    Try best-effort normalization to REQUIRED_COLUMNS.
+    Best-effort normalization to REQUIRED_COLUMNS.
     - rename synonyms to canonical names
     - coerce dates / numerics
     - compute sales if price*quantity is available
-    - compute/normalize discount_pct (0-100 scale)
+    - synthesize missing columns sensibly (quantity=1, discount_pct=0, customer_id from row index)
     """
     df = _normalize_columns(df_in)
 
+    # build mapping of canonical -> source column
     mapping: dict[str, str] = {}
     for canon, keys in SYNONYMS.items():
         col = _find_col(df, keys)
         if col:
             mapping[canon] = col
 
-    # Compute sales if missing but price * quantity exists
-    if "sales" not in mapping and "price" in df.columns:
-        qcol = mapping.get("quantity")
+    # If sales missing but price*quantity exists
+    if "sales" not in mapping and "price" in df.columns and ("quantity" in mapping or "qty" in df.columns):
+        qcol = mapping.get("quantity") or ("qty" if "qty" in df.columns else None)
         if qcol:
             df["__price__"] = _coerce_numeric(df["price"])
             df[qcol] = _coerce_numeric(df[qcol])
             df["sales"] = (df["__price__"] * df[qcol]).round(2)
             mapping["sales"] = "sales"
 
-    # Discount normalization: if only "discount" exists, interpret as 0-1 or 0-100
+    # If quantity missing, default to 1
+    if "quantity" not in mapping:
+        df["quantity"] = 1
+        mapping["quantity"] = "quantity"
+
+    # Discount normalization / default
     if "discount_pct" not in mapping:
         if "discount" in df.columns:
             s = _coerce_numeric(df["discount"])
-            s = s.where(s <= 1, s / 100.0)        # values > 1 => assume already percent
+            s = s.where(s <= 1, s / 100.0)  # >1 means it's already percent
             df["discount_pct"] = (s * 100).round(2)
             mapping["discount_pct"] = "discount_pct"
         else:
-            # default to 0 if discount missing
             df["discount_pct"] = 0.0
             mapping["discount_pct"] = "discount_pct"
 
-    # Coerce/parse types
+    # If customer_id missing, synthesize
+    if "customer_id" not in mapping:
+        df["customer_id"] = ["C" + str(i+1).zfill(6) for i in range(len(df))]
+        mapping["customer_id"] = "customer_id"
+
+    # Parse/coerce types
     if "date" in mapping:
         df[mapping["date"]] = pd.to_datetime(df[mapping["date"]], errors="coerce")
 
     for k in ["quantity","sales","discount_pct","age"]:
         col = mapping.get(k)
-        if col and col in df.columns:
+        if col in df.columns:
             df[col] = _coerce_numeric(df[col])
 
-    # Rename to canonical
+    # rename to canonical
     rename = {mapping[k]: k for k in mapping}
     df = df.rename(columns=rename)
 
-    # Verify required columns
+    # verify required columns
     missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
     if missing:
         raise ValueError(f"Missing required columns after normalization: {missing}")
 
-    # Select canonical order
+    # order & return
     return df[REQUIRED_COLUMNS]
