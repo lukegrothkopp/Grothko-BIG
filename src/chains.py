@@ -31,9 +31,8 @@ class InsightForgeAssistant:
         )
 
     def _plan(self, question: str) -> Dict[str, Any]:
-        # Explicitly pass inputs; get text safely
         out = self.plan_chain.invoke({"question": question})
-        plan_text = out["text"] if isinstance(out, dict) and "text" in out else str(out)
+        plan_text = out.get("text", str(out))
         try:
             plan = json.loads(plan_text)
             if not isinstance(plan, dict):
@@ -57,7 +56,7 @@ class InsightForgeAssistant:
             "retrieved_stats": json.dumps(stats),
             "doc_snippets": "\n\n---\n".join(docs) if docs else "None",
         })
-        answer = out["text"] if isinstance(out, dict) and "text" in out else str(out)
+        answer = out.get("text", str(out))
         save_memory(self.user_id, self.memory)
         log_interaction(self.user_id, question, answer, stats, docs)
         return answer
