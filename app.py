@@ -29,9 +29,24 @@ if rebuild:
 
 # Load data
 if uploaded is not None:
-    df = pd.read_csv(uploaded)
-    if "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    try:
+        # strict path (expects exact canonical columns)
+        df = load_dataframe(uploaded)
+    except Exception:
+        # flexible normalization path
+        raw = pd.read_csv(uploaded)
+        from src.data_loader import prepare_any_sales_dataframe
+        try:
+            df = prepare_any_sales_dataframe(raw)
+            st.sidebar.success("Auto-mapped columns in your CSV.")
+        except Exception as e2:
+            st.sidebar.error(
+                "Your CSV is missing required columns for InsightForge.\n\n"
+                f"Details: {e2}\n\n"
+                "Required columns (canonical): "
+                "date, region, product, customer_id, age, gender, quantity, sales, discount_pct"
+            )
+            st.stop()
 else:
     st.sidebar.info("Using sample dataset.")
     df = load_dataframe(settings.data_path)
