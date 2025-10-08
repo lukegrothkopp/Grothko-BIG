@@ -11,7 +11,7 @@ from src.memory import reset_memory
 from src.doc_index import build_index
 
 st.set_page_config(page_title="InsightForge", layout="wide")
-st.title("InsightForge — BI Assistant")
+st.title("InsightForge — BI Assistant (Clean Revision)")
 
 # Sidebar: user/session controls
 st.sidebar.header("Session & Data")
@@ -78,10 +78,9 @@ with c2:
     st.pyplot(product_performance_plot(df_f), clear_figure=True)
 st.pyplot(regional_performance_plot(df_f), clear_figure=True)
 
-# --- New Visualizations ---
+# Advanced Visuals
 st.subheader("Advanced Visuals")
-
-# Cohort heatmap (first purchase month vs. months since first purchase)
+# Cohort heatmap
 if "customer_id" in df_f.columns and "date" in df_f.columns:
     tmp = df_f.copy()
     tmp["order_month"] = tmp["date"].dt.to_period("M").dt.to_timestamp()
@@ -92,8 +91,8 @@ if "customer_id" in df_f.columns and "date" in df_f.columns:
     cohort = tmp.groupby(["cohort", "cohort_index"])["customer_id"].nunique().reset_index()
     pivot = cohort.pivot(index="cohort", columns="cohort_index", values="customer_id").fillna(0)
 
-    st.caption("Cohort heatmap: unique customers by cohort month vs months since first purchase")
     import matplotlib.pyplot as plt
+    st.caption("Cohort heatmap: unique customers by cohort month vs months since first purchase")
     fig, ax = plt.subplots()
     im = ax.imshow(pivot.values, aspect="auto")
     ax.set_yticks(range(len(pivot.index)))
@@ -105,11 +104,11 @@ if "customer_id" in df_f.columns and "date" in df_f.columns:
     ax.set_title("Customer Cohorts")
     st.pyplot(fig, clear_figure=True)
 
-# Discount vs. average order value (proxy for conversion)
+# Discount vs AOV
 if "discount_pct" in df_f.columns and "sales" in df_f.columns:
     disc = df_f.groupby("discount_pct")["sales"].agg(["mean", "count"]).reset_index()
-    st.caption("Discount vs. average order value (AOV)")
     import matplotlib.pyplot as plt
+    st.caption("Discount vs. average order value (AOV)")
     fig2, ax2 = plt.subplots()
     ax2.scatter(disc["discount_pct"], disc["mean"], s=np.clip(disc["count"], 10, 300))
     ax2.set_xlabel("Discount %")
@@ -136,6 +135,9 @@ if "assistant" not in st.session_state or st.session_state.get("assistant_user")
     st.session_state.assistant_user = user_id
 
 if st.button("Generate Insight") and question:
-    answer = st.session_state.assistant.answer(question)
-    st.markdown(answer)
-    st.success("Response generated using stats + vector RAG. Memory saved per user.")
+    try:
+        answer = st.session_state.assistant.answer(question)
+        st.markdown(answer)
+        st.success("Response generated using stats + vector RAG. Memory saved per user.")
+    except Exception as e:
+        st.exception(e)
