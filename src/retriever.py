@@ -9,7 +9,7 @@ class StatsRetriever:
     def __init__(self, df: pd.DataFrame):
         self.df = df.copy()
 
-    def _sales_by_period(self, freq: str = "M"):
+    def _sales_by_period(self, freq: str = "ME"):
         grp = self.df.set_index("date").groupby(pd.Grouper(freq=freq))["sales"].sum().reset_index()
         grp = grp.rename(columns={"sales":"total_sales"})
         return grp
