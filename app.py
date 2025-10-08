@@ -30,21 +30,27 @@ if rebuild:
 # Load data
 if uploaded is not None:
     try:
-        # strict path (expects exact canonical columns)
+        # strict path: requires canonical columns already present
         df = load_dataframe(uploaded)
     except Exception:
-        # flexible normalization path
-        raw = pd.read_csv(uploaded)
+        # IMPORTANT: reset pointer before reading again
+        try:
+            uploaded.seek(0)
+        except Exception:
+            pass
+        # robust read: infer delimiter + strip BOM
+        raw = pd.read_csv(uploaded, sep=None, engine="python", encoding="utf-8-sig")
+
+        # try flexible normalization to canonical schema
         from src.data_loader import prepare_any_sales_dataframe
         try:
             df = prepare_any_sales_dataframe(raw)
-            st.sidebar.success("Auto-mapped columns in your CSV.")
+            st.sidebar.success("Auto-mapped your CSV to InsightForge’s schema.")
         except Exception as e2:
             st.sidebar.error(
-                "Your CSV is missing required columns for InsightForge.\n\n"
+                "Your CSV is missing required fields for InsightForge.\n\n"
                 f"Details: {e2}\n\n"
-                "Required columns (canonical): "
-                "date, region, product, customer_id, age, gender, quantity, sales, discount_pct"
+                "Required columns: date, region, product, customer_id, age, gender, quantity, sales, discount_pct"
             )
             st.stop()
 else:
