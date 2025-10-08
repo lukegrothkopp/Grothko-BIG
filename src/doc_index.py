@@ -14,10 +14,13 @@ def _load_docs() -> List:
     docs = []
     if not DOCS_DIR.exists():
         return docs
-    pdf_loader = DirectoryLoader(str(DOCS_DIR), glob="**/*.pdf", loader_cls=PyPDFLoader, show_progress=True)
-    docs += pdf_loader.load()
+    pdf_loader = DirectoryLoader(str(DOCS_DIR), glob="**/*.pdf", loader_cls=PyPDFLoader, show_progress=False)
+    try:
+        docs += pdf_loader.load()
+    except Exception:
+        pass
     for pattern in ["**/*.txt", "**/*.md", "**/*.csv"]:
-        tl = DirectoryLoader(str(DOCS_DIR), glob=pattern, loader_cls=TextLoader, show_progress=True)
+        tl = DirectoryLoader(str(DOCS_DIR), glob=pattern, loader_cls=TextLoader, show_progress=False)
         try:
             docs += tl.load()
         except Exception:
