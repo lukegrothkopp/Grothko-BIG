@@ -2,7 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 def sales_trend_plot(df: pd.DataFrame):
-    monthly = df.set_index("date").groupby(pd.Grouper(freq="M"))["sales"].sum()
+    monthly = df.set_index("date").groupby(pd.Grouper(freq="ME"))["sales"].sum()
     fig, ax = plt.subplots()
     monthly.plot(ax=ax)
     ax.set_title("Sales Trend (Monthly)")
