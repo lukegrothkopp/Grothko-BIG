@@ -37,9 +37,14 @@ def _deserialize_messages(msgs: List[dict]):
     return out
 
 def load_memory(user_id: str) -> ConversationBufferMemory:
+    mem = ConversationBufferMemory(
+        memory_key="history",
+        input_key="question",
+        output_key="text",
+        return_messages=True,
+    )
     MEMORY_DIR.mkdir(parents=True, exist_ok=True)
     path = MEMORY_DIR / f"{user_id}.json"
-    mem = ConversationBufferMemory(memory_key="history", return_messages=True)
     if path.exists():
         try:
             data = json.loads(path.read_text())
