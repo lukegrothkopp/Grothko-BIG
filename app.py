@@ -6,7 +6,7 @@ from datetime import datetime
 from src.config import settings
 from src.data_loader import load_dataframe
 from src.chains import InsightForgeAssistant
-from src.viz import sales_trend_plot, product_performance_plot, regional_performance_plot
+from src.viz import sales_trend_plot, product_performance_plot, regional_performance_plot, cohort_heatmap
 from src.memory import reset_memory
 from src.doc_index import build_index
 
