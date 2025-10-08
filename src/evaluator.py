@@ -4,7 +4,7 @@ from langchain_openai import ChatOpenAI
 from langchain.evaluation.qa import QAEvalChain
 
 def evaluate_qa(examples: List[Dict[str,str]], predictions: List[Dict[str,str]]):
-    """Minimal evaluation wrapper.
+    """Minimal evaluation wrapper using an LLM grader.
     examples: list of {'question':..., 'answer':...} gold references
     predictions: list of {'question':..., 'answer':...} model outputs
     """
@@ -12,3 +12,8 @@ def evaluate_qa(examples: List[Dict[str,str]], predictions: List[Dict[str,str]])
     eval_chain = QAEvalChain.from_llm(llm)
     graded = eval_chain.evaluate(examples, predictions, question_key="question", prediction_key="answer", answer_key="answer")
     return graded
+
+# Example:
+# golds = [{'question':'Which region leads sales?','answer':'West'}]
+# preds = [{'question':'Which region leads sales?','answer':'West with $1.2M'}]
+# results = evaluate_qa(golds, preds)
