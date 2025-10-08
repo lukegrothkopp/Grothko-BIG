@@ -103,27 +103,24 @@ st.pyplot(regional_performance_plot(df_f), clear_figure=True)
 st.subheader("Advanced Visuals")
 # Cohort heatmap
 if "customer_id" in df_f.columns and "date" in df_f.columns:
-    tmp = df_f.copy()
-    tmp["order_month"] = tmp["date"].dt.to_period("M").dt.to_timestamp()
-    first = tmp.groupby("customer_id")["order_month"].min().rename("cohort")
-    tmp = tmp.join(first, on="customer_id")
-    tmp["cohort_index"] = ((tmp["order_month"].dt.year - tmp["cohort"].dt.year) * 12 +
-                           (tmp["order_month"].dt.month - tmp["cohort"].dt.month))
-    cohort = tmp.groupby(["cohort", "cohort_index"])["customer_id"].nunique().reset_index()
-    pivot = cohort.pivot(index="cohort", columns="cohort_index", values="customer_id").fillna(0)
+    with st.expander("Cohort heatmap settings", expanded=False):
+        metric = st.selectbox("Metric", ["Retention %", "Customers"], index=0)
+        last_n = st.slider("Show last N cohorts", min_value=6, max_value=24, value=12, step=1)
+        max_months = st.slider("Max months since first purchase", min_value=6, max_value=24, value=12, step=1)
+        annotate = st.checkbox("Annotate cells (auto when small)", value=False)
 
-    import matplotlib.pyplot as plt
-    st.caption("Cohort heatmap: unique customers by cohort month vs months since first purchase")
-    fig, ax = plt.subplots()
-    im = ax.imshow(pivot.values, aspect="auto")
-    ax.set_yticks(range(len(pivot.index)))
-    ax.set_yticklabels([d.strftime("%Y-%m") for d in pivot.index])
-    ax.set_xticks(range(len(pivot.columns)))
-    ax.set_xticklabels(pivot.columns.astype(int))
-    ax.set_xlabel("Months since first purchase")
-    ax.set_ylabel("Cohort (first purchase month)")
-    ax.set_title("Customer Cohorts")
-    st.pyplot(fig, clear_figure=True)
+    try:
+        fig = cohort_heatmap(
+            df_f,
+            value="retention" if metric == "Retention %" else "customers",
+            last_n_cohorts=last_n,
+            max_months=max_months,
+            annotate=annotate,
+        )
+        st.caption("Heatmap shows either % of cohort retained over time or unique customers, row-normalized for readability.")
+        st.pyplot(fig, clear_figure=True)
+    except Exception as e:
+        st.info(f"Cohort heatmap unavailable: {e}")
 
 # Discount vs AOV
 if "discount_pct" in df_f.columns and "sales" in df_f.columns:
