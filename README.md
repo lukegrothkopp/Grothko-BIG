@@ -1,23 +1,21 @@
-# InsightForge — AI-Powered Business Intelligence Assistant
+# InsightForge — Clean Revision
 
-InsightForge turns raw business data into insights and visuals using LLMs + a lightweight RAG pipeline.
+A fresh, working build with:
+- Persistent chat memory per user
+- Vector RAG over docs/ via FAISS
+- Robust JSON-safe serialization
+- Filters + advanced visuals
+- Logging of Q/A + retrieved context
 
-## Quickstart
-
+## Run locally
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 cp .env.example .env  # add OPENAI_API_KEY
 streamlit run app.py
 ```
 
-## Inside
-- `data/sample_sales.csv` — synthetic data
-- `app.py` — Streamlit UI
-- `src/retriever.py` — pandas-based stats retriever
-- `src/prompts.py` — system + answer prompts
-- `src/chains.py` — LangChain chat with memory + RAG
-- `src/viz.py` — plotting helpers
-- `src/evaluator.py` — Q/A eval with QAEvalChain
-- `tests/test_basic.py` — basic sanity test
+## Deploy
+- Keep OPENAI_API_KEY in Streamlit **Secrets**.
+- This code reads secrets first, then env vars.
