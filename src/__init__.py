@@ -1,1 +1,1 @@
-"Top-level package for InsightForge."\n
+"""Top-level package for InsightForge."""
