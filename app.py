@@ -11,7 +11,7 @@ from src.memory import reset_memory
 from src.doc_index import build_index
 
 st.set_page_config(page_title="InsightForge", layout="wide")
-st.title("InsightForge — BI Assistant (Clean Revision)")
+st.title("InsightForge — BI Assistant")
 
 # Sidebar: user/session controls
 st.sidebar.header("Session & Data")
