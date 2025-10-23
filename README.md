@@ -1,4 +1,4 @@
-# InsightForge — Clean Revision
+# InsightForge
 
 A fresh, working build with:
 - Persistent chat memory per user
