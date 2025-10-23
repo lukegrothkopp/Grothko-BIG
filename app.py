@@ -5,8 +5,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
-import google.generativeai as genai
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -107,11 +106,10 @@ def create_data_summary(df):
 
 # Function to setup RAG system
 def setup_rag_system(df, api_key):
-    """Setup RAG system with Google Gemini and HuggingFace Embeddings"""
+    """Setup RAG system with OpenAI and HuggingFace Embeddings"""
     try:
-        # Configure Gemini
-        genai.configure(api_key=api_key)
-        
+        os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
+   
         # Create data summary
         data_summary = create_data_summary(df)
         st.session_state.data_summary = data_summary
@@ -147,11 +145,9 @@ def setup_rag_system(df, api_key):
         st.session_state.vectorstore = vectorstore
         
         # Setup LLM
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash-exp",
-            google_api_key=api_key,
+        llm = ChatOpenAI(
+            model="gpt-4o-mini",   # or gpt-4.1, gpt-4o, gpt-4o-mini
             temperature=0.7,
-            convert_system_message_to_human=True
         )
         
         # Setup memory
