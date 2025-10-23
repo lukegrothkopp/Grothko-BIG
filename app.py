@@ -8,8 +8,6 @@ from datetime import datetime
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain.chains import ConversationalRetrievalChain
-from langchain.memory import ConversationBufferMemory
 import numpy as np
 import os
 
@@ -42,44 +40,52 @@ st.markdown("""
 
 # Initialize session state
 if 'chat_history' not in st.session_state:
-    st.session_state.chat_history = []
+    st.session_state.chat_history = []  # list[{"role": "user"|"assistant", "content": str}]
 if 'data_loaded' not in st.session_state:
     st.session_state.data_loaded = False
 if 'vectorstore' not in st.session_state:
     st.session_state.vectorstore = None
-if 'conversation_chain' not in st.session_state:
-    st.session_state.conversation_chain = None
+if 'retriever' not in st.session_state:
+    st.session_state.retriever = None
+if 'llm' not in st.session_state:
+    st.session_state.llm = None
 if 'data_summary' not in st.session_state:
     st.session_state.data_summary = ""
 
 # Function to create data summary
-def create_data_summary(df):
+def create_data_summary(df: pd.DataFrame) -> str:
     """Create a comprehensive text summary of the dataset for RAG"""
     summary_parts = []
     summary_parts.append(f"Dataset Overview: The dataset contains {len(df)} records and {df.shape[1]} columns.")
     summary_parts.append(f"Columns: {', '.join(df.columns.tolist())}")
 
-    numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns
+    numeric_cols = df.select_dtypes(include=['float64', 'int64', 'float32', 'int32']).columns
     if len(numeric_cols) > 0:
         summary_parts.append("\nNumeric Columns Analysis:")
         for col in numeric_cols:
-            summary_parts.append(f"\n{col}:")
-            summary_parts.append(f"  - Mean: {df[col].mean():.2f}")
-            summary_parts.append(f"  - Median: {df[col].median():.2f}")
-            summary_parts.append(f"  - Std Dev: {df[col].std():.2f}")
-            summary_parts.append(f"  - Min: {df[col].min():.2f}")
-            summary_parts.append(f"  - Max: {df[col].max():.2f}")
+            try:
+                summary_parts.append(f"\n{col}:")
+                summary_parts.append(f"  - Mean: {df[col].mean():.2f}")
+                summary_parts.append(f"  - Median: {df[col].median():.2f}")
+                summary_parts.append(f"  - Std Dev: {df[col].std():.2f}")
+                summary_parts.append(f"  - Min: {df[col].min():.2f}")
+                summary_parts.append(f"  - Max: {df[col].max():.2f}")
+            except Exception:
+                pass
 
     categorical_cols = df.select_dtypes(include=['object']).columns
     if len(categorical_cols) > 0:
         summary_parts.append("\nCategorical Columns Analysis:")
         for col in categorical_cols:
-            unique_vals = df[col].nunique()
-            summary_parts.append(f"\n{col}:")
-            summary_parts.append(f"  - Unique values: {unique_vals}")
-            if unique_vals <= 10:
-                value_counts = df[col].value_counts()
-                summary_parts.append(f"  - Distribution: {value_counts.to_dict()}")
+            try:
+                unique_vals = df[col].nunique()
+                summary_parts.append(f"\n{col}:")
+                summary_parts.append(f"  - Unique values: {unique_vals}")
+                if unique_vals <= 10:
+                    value_counts = df[col].value_counts()
+                    summary_parts.append(f"  - Distribution: {value_counts.to_dict()}")
+            except Exception:
+                pass
 
     missing = df.isnull().sum()
     if missing.sum() > 0:
@@ -88,13 +94,14 @@ def create_data_summary(df):
             summary_parts.append(f"  - {col}: {missing[col]} missing values")
 
     summary_parts.append("\nKey Insights:")
+    completeness = (1 - df.isnull().sum().sum() / max(1, (df.shape[0] * df.shape[1]))) * 100
     summary_parts.append(f"  - Total rows: {len(df)}")
-    summary_parts.append(f"  - Data completeness: {(1 - df.isnull().sum().sum() / (df.shape[0] * df.shape[1])) * 100:.1f}%")
+    summary_parts.append(f"  - Data completeness: {completeness:.1f}%")
     return "\n".join(summary_parts)
 
-# Function to setup RAG system
-def setup_rag_system(df, api_key):
-    """Setup RAG system with OpenAI chat model and OpenAI embeddings"""
+# Function to setup RAG system (no langchain.chains / memory)
+def setup_rag_system(df: pd.DataFrame, api_key: str) -> bool:
+    """Setup RAG using FAISS retriever + OpenAI embeddings + ChatOpenAI"""
     try:
         os.environ["OPENAI_API_KEY"] = api_key
 
@@ -102,57 +109,87 @@ def setup_rag_system(df, api_key):
         st.session_state.data_summary = data_summary
 
         data_insights = f"""
-        {data_summary}
+{data_summary}
 
-        Sample Data Records:
-        {df.head(20).to_string()}
+Sample Data Records (first 20):
+{df.head(20).to_string()}
 
-        Column Data Types and Info:
-        {df.dtypes.to_string()}
-        """
+Column Data Types and Info:
+{df.dtypes.to_string()}
+"""
 
+        # Split text into chunks
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
             chunk_overlap=200,
-            length_function=len
+            length_function=len,
         )
         chunks = text_splitter.split_text(data_insights)
 
+        # Embeddings + Vector store
         embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-
         vectorstore = FAISS.from_texts(chunks, embeddings)
+        retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+
+        # LLM
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
+
+        # Save to session
         st.session_state.vectorstore = vectorstore
-
-        llm = ChatOpenAI(
-            model="gpt-4o-mini",
-            temperature=0.7
-        )
-
-        memory = ConversationBufferMemory(
-            memory_key="chat_history",
-            return_messages=True,
-            output_key="answer"
-        )
-
-        conversation_chain = ConversationalRetrievalChain.from_llm(
-            llm=llm,
-            retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),
-            memory=memory,
-            return_source_documents=True,
-            verbose=True
-        )
-
-        st.session_state.conversation_chain = conversation_chain
+        st.session_state.retriever = retriever
+        st.session_state.llm = llm
         return True
     except Exception as e:
         st.error(f"Error setting up RAG system: {e}")
         return False
+
+def answer_with_rag(question: str):
+    """Minimal RAG loop: retrieve → stuff into prompt → call LLM. Returns (answer, source_docs)"""
+    retriever = st.session_state.retriever
+    llm = st.session_state.llm
+    source_docs = []
+    context = ""
+
+    if retriever is not None:
+        try:
+            source_docs = retriever.get_relevant_documents(question)
+            context = "\n\n".join(doc.page_content for doc in source_docs)
+        except Exception as e:
+            context = ""
+            source_docs = []
+            st.error(f"Retrieval error: {e}")
+
+    # Incorporate brief chat history (last 6 turns) to keep it lightweight
+    history_tail = st.session_state.chat_history[-6:]
+    history_text = "\n".join([f"{m['role'].capitalize()}: {m['content']}" for m in history_tail])
+
+    system_instructions = (
+        "You are a helpful business data analyst. Use the provided context (from the uploaded CSV) "
+        "to answer the user's question. If the answer is not in the context, say you don't have enough "
+        "information and suggest what to compute or inspect."
+    )
+
+    prompt = (
+        f"{system_instructions}\n\n"
+        f"Chat history (may be empty):\n{history_text}\n\n"
+        f"Context from data-derived knowledge base:\n{context}\n\n"
+        f"User question: {question}\n\n"
+        f"Answer clearly and concisely:"
+    )
+
+    try:
+        resp = llm.invoke(prompt)
+        answer = getattr(resp, "content", str(resp))
+        return answer, source_docs
+    except Exception as e:
+        return f"Error generating response: {e}", source_docs
 
 # Sidebar
 with st.sidebar:
     st.image("https://via.placeholder.com/150x50?text=InsightForge", width=150)
     st.title("Navigation")
 
+    # API Key input
     st.subheader("🔑 API Configuration")
     api_key = st.text_input(
         "Enter OpenAI API Key:",
@@ -173,6 +210,7 @@ with st.sidebar:
 
     st.divider()
 
+    # Data upload section
     st.subheader("📁 Data Upload")
     uploaded_file = st.file_uploader(
         "Upload your dataset (CSV)",
@@ -187,6 +225,7 @@ with st.sidebar:
             st.session_state.data_loaded = True
             st.success(f"✅ Data loaded: {df.shape[0]} rows, {df.shape[1]} columns")
 
+            # Setup RAG system
             if st.session_state.vectorstore is None:
                 with st.spinner("Setting up AI system..."):
                     if setup_rag_system(df, api_key):
@@ -220,11 +259,8 @@ if page == "Dashboard":
                 st.metric(label=f"Avg {numeric_cols[0]}", value=f"{df[numeric_cols[0]].mean():.2f}")
 
         with col4:
-            st.metric(
-                label="Data Quality",
-                value=f"{(1 - df.isnull().sum().sum() / (df.shape[0] * df.shape[1])) * 100:.1f}%",
-                delta="Complete"
-            )
+            completeness = (1 - df.isnull().sum().sum() / max(1, (df.shape[0] * df.shape[1]))) * 100
+            st.metric(label="Data Quality", value=f"{completeness:.1f}%", delta="Complete")
 
         st.divider()
 
@@ -304,40 +340,38 @@ elif page == "Data Analysis":
 elif page == "AI Assistant":
     st.header("🤖 AI-Powered Business Intelligence Assistant")
 
-    if st.session_state.data_loaded and api_key and st.session_state.conversation_chain:
+    if st.session_state.data_loaded and api_key and st.session_state.retriever and st.session_state.llm:
         st.info("💡 Ask questions about your data and get AI-powered insights with RAG!")
 
+        # Display chat history
         for message in st.session_state.chat_history:
             with st.chat_message(message["role"]):
                 st.write(message["content"])
 
+        # User input
         user_question = st.chat_input("Ask a question about your data...")
 
         if user_question:
             st.session_state.chat_history.append({"role": "user", "content": user_question})
-
             with st.chat_message("user"):
                 st.write(user_question)
 
+            # Get AI response via minimal RAG
             with st.chat_message("assistant"):
                 with st.spinner("Analyzing your data..."):
-                    try:
-                        response = st.session_state.conversation_chain({"question": user_question})
-                        ai_response = response['answer']
-                        st.write(ai_response)
+                    answer, source_docs = answer_with_rag(user_question)
+                    st.write(answer)
 
-                        if 'source_documents' in response and response['source_documents']:
-                            with st.expander("📚 View Source Context"):
-                                for i, doc in enumerate(response['source_documents']):
-                                    st.markdown(f"**Source {i+1}:**")
-                                    st.text(doc.page_content[:300] + "...")
+                    # Show source documents if available
+                    if source_docs:
+                        with st.expander("📚 View Source Context"):
+                            for i, doc in enumerate(source_docs):
+                                st.markdown(f"**Source {i+1}:**")
+                                st.text(doc.page_content[:300] + "...")
 
-                        st.session_state.chat_history.append({"role": "assistant", "content": ai_response})
-                    except Exception as e:
-                        error_msg = f"Error generating response: {str(e)}"
-                        st.error(error_msg)
-                        st.session_state.chat_history.append({"role": "assistant", "content": error_msg})
+                    st.session_state.chat_history.append({"role": "assistant", "content": answer})
 
+        # Clear chat button
         col1, col2 = st.columns([6, 1])
         with col2:
             if st.button("🗑️ Clear Chat"):
@@ -415,3 +449,4 @@ st.markdown("""
     <p>InsightForge - AI-Powered Business Intelligence | Built with Streamlit & LangChain (OpenAI)</p>
 </div>
 """, unsafe_allow_html=True)
+
