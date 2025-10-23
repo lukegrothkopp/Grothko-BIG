@@ -63,28 +63,60 @@ def _norm(s: str) -> str:
     return re.sub(r'[^a-z0-9]', '', str(s).lower())
 
 def _find_col(df: pd.DataFrame, name: str):
-    """Find a column by fuzzy / case-insensitive match (handles underscores, spaces, %)."""
-    target = _norm(name)
-    # Exact normalized match
-    for c in df.columns:
-        if _norm(c) == target:
-            return c
-    # Contains match
-    for c in df.columns:
-        if target in _norm(c):
-            return c
-    return None
+    """
+    Fuzzy / case-insensitive column matcher.
+    Now handles common aliases like percent/percentage/perc <-> pct.
+    Returns the *actual* column name from df or None.
+    """
+    def _norm(s: str) -> str:
+        return re.sub(r'[^a-z0-9]', '', str(s).lower())
 
-def _first_datetime_col(df: pd.DataFrame):
+    def _alias_set(s: str):
+        """Generate alias variants for a normalized string."""
+        alts = {s}
+        # percent-family <-> pct
+        if 'percentage' in s:
+            alts.add(s.replace('percentage', 'pct'))
+            alts.add(s.replace('percentage', 'percent'))
+        if 'percent' in s:
+            alts.add(s.replace('percent', 'pct'))
+            alts.add(s.replace('percent', 'percentage'))
+        if 'perc' in s:
+            alts.add(s.replace('perc', 'pct'))
+            alts.add(s.replace('perc', 'percent'))
+            alts.add(s.replace('perc', 'percentage'))
+        if 'pct' in s:
+            alts.add(s.replace('pct', 'percent'))
+            alts.add(s.replace('pct', 'percentage'))
+            alts.add(s.replace('pct', 'perc'))
+        return alts
+
+    target = _norm(name)
+    target_alts = _alias_set(target)
+
+    # Precompute normalized + alias variants for dataframe columns
+    col_map_exact = {}   # normalized/alias -> original column
+    col_norms = {}       # original column -> set of normalized/alias forms
     for c in df.columns:
-        if pd.api.types.is_datetime64_any_dtype(df[c]):
-            return c
-        # try parse sample
-        try:
-            pd.to_datetime(df[c], errors='raise')
-            return c
-        except Exception:
-            continue
+        cn = _norm(c)
+        alts = _alias_set(cn)
+        alts.add(cn)
+        col_norms[c] = alts
+        for a in alts:
+            # only set if not already mapped to prefer exact first occurrence
+            col_map_exact.setdefault(a, c)
+
+    # 1) Exact alias match
+    for ta in target_alts:
+        if ta in col_map_exact:
+            return col_map_exact[ta]
+
+    # 2) Contains match against aliases
+    for c, alts in col_norms.items():
+        for a in alts:
+            if any(ta in a for ta in target_alts) or any(a in ta for ta in target_alts):
+                return c
+
     return None
 
 # -------------------------
