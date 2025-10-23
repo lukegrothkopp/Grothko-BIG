@@ -75,6 +75,9 @@ if 'llm' not in st.session_state:
     st.session_state.llm = None
 if 'data_summary' not in st.session_state:
     st.session_state.data_summary = ""
+if 'page' not in st.session_state:
+    st.session_state.page = "Dashboard"
+page = st.session_state.get("page", "Dashboard")
 
 # -------------------------
 # Helpers
@@ -478,6 +481,12 @@ with st.sidebar:
 
     # API Key input (prefer secrets)
     st.subheader("🔑 API Configuration")
+    
+    # --- Navigation ---
+    pages = ["Dashboard", "Data Analysis", "AI Assistant", "Visualizations"]
+    current_index = pages.index(st.session_state.page) if st.session_state.page in pages else 0
+    selection = st.radio("Select Page:", pages, index=current_index)
+    st.session_state.page = selection
 
     # Prefer Streamlit Secrets (or env) first
     api_key = get_openai_api_key()
@@ -514,6 +523,7 @@ with st.sidebar:
 st.markdown('<h1 class="main-header">📊 InsightForge - AI-Powered Business Intelligence</h1>', unsafe_allow_html=True)
 
 # Dashboard Page
+page = st.session_state.get("page", "Dashboard")
 if page == "Dashboard":
     st.header("📈 Business Intelligence Dashboard")
     if st.session_state.data_loaded:
