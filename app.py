@@ -652,7 +652,7 @@ with st.sidebar:
 # -------------------------
 # Main content
 # -------------------------
-st.markdown('<h1 class="main-header">Grothko Consulting B.I.G.  - Business Intelligence Generator</h1>', unsafe_allow_html=True)
+st.markdown('<h1 class="main-header">Grothko Consulting "BIG" (Business Intelligence Generator)</h1>', unsafe_allow_html=True)
 
 # Dashboard Page
 page = st.session_state.get("page", "Dashboard")
