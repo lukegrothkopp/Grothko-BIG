@@ -179,17 +179,22 @@ with st.sidebar:
     st.title("Navigation")
     
     # API Key input
-    st.subheader("🔑 API Configuration")
-    api_key = st.text_input(
-        "Enter Google API Key:",
-        type="password",
-        help="Get your API key from https://makersuite.google.com/app/apikey"
-    )
-    
-    if api_key:
-        os.environ["GOOGLE_API_KEY"] = api_key
-        st.success("✅ API Key configured")
-    
+    has_openai = "OPENAI_API_KEY" in st.secrets and bool(st.secrets["OPENAI_API_KEY"])
+
+    if uploaded_file is not None:
+        if not has_openai:
+            st.warning("⚠️ Add OPENAI_API_KEY to Streamlit secrets (App → Settings → Secrets).")
+        else:
+            df = pd.read_csv(uploaded_file)
+            st.session_state.df = df
+            st.session_state.data_loaded = True
+            st.success(f"✅ Data loaded: {df.shape[0]} rows, {df.shape[1]} columns")
+
+        if st.session_state.vectorstore is None:
+            with st.spinner("Setting up AI system..."):
+                if setup_rag_system(df, api_key=None):
+                    st.success("🤖 AI system ready!")
+
     st.divider()
     
     page = st.radio(
@@ -406,9 +411,7 @@ elif page == "AI Assistant":
                 st.session_state.chat_history = []
                 st.rerun()
     else:
-        if not api_key:
-            st.warning("⚠️ Please enter your Google API Key in the sidebar.")
-        elif not st.session_state.data_loaded:
+        if not st.session_state.data_loaded:
             st.warning("⚠️ Please upload a dataset first.")
         else:
             st.warning("⚠️ AI system is not ready. Please reload the page.")
