@@ -1,8 +1,17 @@
-.env
-.streamlit/secrets.toml
-storage/logs/*.jsonl
-storage/memory/*.json
-storage/faiss_index/**
+# Python
 __pycache__/
 *.pyc
-.DS_Store
+.venv/
+env/
+venv/
+
+# Streamlit & data
+.streamlit/secrets.toml
+.streamlit/**.yaml
+**/.DS_Store
+data/*
+!data/samples/**  # keep small demo files if you want
+
+# Jupyter (if you use notebooks)
+.ipynb_checkpoints/
+
