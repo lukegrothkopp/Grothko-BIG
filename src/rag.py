@@ -1,16 +1,15 @@
+# src/rag.py
 from __future__ import annotations
 from typing import List, Tuple
-import pandas as pd
 import numpy as np
+import pandas as pd
 from io import StringIO
 from dataclasses import dataclass
-from src.llm import embed_text
-from langchain_community.vectorstores import FAISS  # local, fast
-from langchain_community.docstore.in_memory import InMemoryDocstore
-from langchain_community.vectorstores.utils import DistanceStrategy
-from langchain_core.documents import Document
+import faiss
 
-# ---- Data profiling -> a single text corpus we can chunk ----
+from src.llm import embed_text
+
+# ---------- Data profiling -> corpus we can chunk/index ----------
 
 def dataframe_profile(df: pd.DataFrame) -> str:
     parts = []
@@ -38,7 +37,7 @@ def dataframe_profile(df: pd.DataFrame) -> str:
         parts.append("\nMissing values:")
         parts.extend([f"- {c}: {int(v)}" for c, v in miss.items()])
 
-    # include small sample for RAG grounding
+    # include a small sample for RAG grounding
     head_buf = StringIO()
     df.head(20).to_string(head_buf)
     parts.append("\nSample rows:\n" + head_buf.getvalue())
@@ -49,7 +48,7 @@ def dataframe_profile(df: pd.DataFrame) -> str:
 
     return "\n".join(parts)
 
-# ---- Chunking ----
+# ---------- Chunking ----------
 
 def chunk_text(txt: str, chunk_size: int = 900, overlap: int = 180) -> List[str]:
     chunks = []
@@ -57,30 +56,45 @@ def chunk_text(txt: str, chunk_size: int = 900, overlap: int = 180) -> List[str]
     while start < len(txt):
         end = min(len(txt), start + chunk_size)
         chunks.append(txt[start:end])
-        start = end - overlap
-        if start < 0:
-            start = 0
         if end == len(txt):
             break
+        start = max(0, end - overlap)
     return chunks
+
+# ---------- Simple FAISS-backed index (cosine similarity via normalized vectors) ----------
 
 @dataclass
 class RAGIndex:
-    vectorstore: FAISS
+    index: faiss.IndexFlatIP              # inner product index on normalized vectors = cosine sim
+    embeddings: np.ndarray                # shape (n_chunks, dim)
     chunks: List[str]
+
+def _normalize(mat: np.ndarray) -> np.ndarray:
+    norms = np.linalg.norm(mat, axis=1, keepdims=True) + 1e-12
+    return mat / norms
 
 def build_index(df: pd.DataFrame) -> RAGIndex:
     corpus = dataframe_profile(df)
     chunks = chunk_text(corpus)
-    embeddings = embed_text(chunks)  # OpenAI embeddings
-    # Build FAISS
-    vs = FAISS.from_embeddings(
-        text_embeddings=list(zip(chunks, embeddings)),
-        metadatas=[{"source": f"chunk_{i}"} for i in range(len(chunks))],
-        distance_strategy=DistanceStrategy.COSINE
-    )
-    return RAGIndex(vectorstore=vs, chunks=chunks)
+
+    # Get OpenAI embeddings
+    vecs = np.array(embed_text(chunks), dtype="float32")
+    vecs = _normalize(vecs)
+
+    dim = vecs.shape[1]
+    index = faiss.IndexFlatIP(dim)  # cosine when vectors are normalized
+    index.add(vecs)
+
+    return RAGIndex(index=index, embeddings=vecs, chunks=chunks)
 
 def retrieve(rag: RAGIndex, query: str, k: int = 4) -> List[Tuple[str, float]]:
-    docs_and_scores = rag.vectorstore.similarity_search_with_score(query, k=k)
-    return [(d.page_content, float(score)) for d, score in docs_and_scores]
+    qvec = np.array(embed_text([query])[0], dtype="float32").reshape(1, -1)
+    qvec = _normalize(qvec)
+
+    scores, ids = rag.index.search(qvec, k)
+    out: List[Tuple[str, float]] = []
+    for score, idx in zip(scores[0], ids[0]):
+        if idx == -1:
+            continue
+        out.append((rag.chunks[int(idx)], float(score)))
+    return out
