@@ -146,8 +146,9 @@ def setup_rag_system(df, api_key):
         
         # Setup LLM
         llm = ChatOpenAI(
-            model="gpt-4o-mini",   # or gpt-4.1, gpt-4o, gpt-4o-mini
+            model=st.secrets.get("OPENAI_MODEL", "gpt-4o-mini"),
             temperature=0.7,
+            api_key=st.secrets["OPENAI_API_KEY"],
         )
         
         # Setup memory
