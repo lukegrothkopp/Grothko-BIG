@@ -370,45 +370,58 @@ def answer_with_rag(question: str):
 # -------------------------
 # Structured Analytics Engine
 # -------------------------
-def handle_analytics_query(question: str, df: pd.DataFrame):
-    """
-    Detects and executes common analytics requests on the *actual* dataframe.
-    Returns (handled: bool, message: str)
-    """
-    q = question.lower().strip()
+    # --- Conditional aggregate: average/mean of X among/for/where Y [= Z]? 
+    # Examples:
+    #  - "average age among customers who recommend"
+    #  - "avg unit price for coupon used = yes"
+    #  - "mean net revenue where city = seattle"
+    m_avg = re.search(
+        r'\b(average|avg|mean)\b\s+(of\s+|for\s+)?(?P<metric>[\w %_]+?)\s+(among|for|where)\s+(?P<condcol>[\w %_]+?)(\s*(=|is|equals)\s*(?P<condval>[\w %_]+))?$',
+        q
+    )
+    if m_avg:
+        raw_metric = m_avg.group('metric').strip()
+        raw_condcol = m_avg.group('condcol').strip()
+        raw_condval = (m_avg.group('condval') or '').strip()
 
-    # --- Correlation between X and Y ---
-    m = re.search(r'correlat\w*\s+.*\bbetween\b\s+(.+?)\s+\b(and|&)\b\s+(.+)', q)
-    if m:
-        raw_x = m.group(1)
-        raw_y = m.group(3)
-        col_x = _find_col(df, raw_x)
-        col_y = _find_col(df, raw_y)
+        metric_col = _find_col(df, raw_metric)
+        cond_col = _find_col(df, raw_condcol)
 
-        if not col_x or not col_y:
-            return True, ("I couldn't match both columns in your dataset.\n"
-                          f"Matched X: `{col_x or 'None'}` | Matched Y: `{col_y or 'None'}`.\n"
+        if not metric_col or not cond_col:
+            return True, ("I couldn't resolve the requested columns.\n"
+                          f"Metric: `{metric_col or raw_metric}` | Condition column: `{cond_col or raw_condcol}`.\n"
                           f"Available columns: {list(df.columns)}")
 
-        # Coerce to numeric
-        x = pd.to_numeric(df[col_x], errors='coerce')
-        y = pd.to_numeric(df[col_y], errors='coerce')
-        valid = x.notna() & y.notna()
+        # Build condition
+        series = df[cond_col]
+        # If a value is provided, match it (case-insensitive string compare after str())
+        if raw_condval:
+            target_val = str(raw_condval).strip().lower()
+            cond_mask = series.astype(str).str.lower().str.strip().eq(target_val)
+        else:
+            # No explicit value → treat as "truthy"
+            # Handles booleans, 0/1, yes/no, y/n, true/false
+            truthy = {'1', 'true', 't', 'yes', 'y', 'recommended', 'recommend', 'member', 'used'}
+            cond_mask = series.astype(str).str.lower().str.strip().isin(truthy)
+            # If nothing matched, also try actual boolean True
+            if not cond_mask.any() and series.dtype == bool:
+                cond_mask = series.fillna(False)
 
-        if valid.sum() < 3:
-            return True, f"Not enough overlapping numeric values to compute correlation between `{col_x}` and `{col_y}`."
+        # Compute numeric aggregate on the metric
+        metric_vals = pd.to_numeric(df.loc[cond_mask, metric_col], errors='coerce').dropna()
+        n = metric_vals.shape[0]
+        if n == 0:
+            return True, (f"No matching rows after filtering `{cond_col}`"
+                          f"{' = ' + raw_condval if raw_condval else ' is truthy'}.")
+        mean_val = metric_vals.mean()
 
-        r = x[valid].corr(y[valid], method='pearson')
-        msg = f"**Pearson correlation (r) between `{col_x}` and `{col_y}`:** **{r:.3f}** (n={valid.sum()})"
+        msg = (f"**Average {metric_col}** for rows where **{cond_col}"
+               f"{' = ' + raw_condval if raw_condval else ' is truthy'}**: **{mean_val:.2f}** (n={n})")
         st.write(msg)
 
-        # Optional scatter chart
+        # Optional quick viz: show distribution of the metric for the filtered rows
         try:
-            fig = px.scatter(
-                pd.DataFrame({col_x: x[valid], col_y: y[valid]}),
-                x=col_x, y=col_y,
-                title=f"Scatter: {col_x} vs {col_y}"
-            )
+            fig = px.histogram(metric_vals, nbins=20, title=f"Distribution of {metric_col} (filtered)")
             st.plotly_chart(fig, use_container_width=True)
         except Exception:
             pass
