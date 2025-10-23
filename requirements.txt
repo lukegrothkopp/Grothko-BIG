@@ -1,16 +1,12 @@
-streamlit>=1.37
-pandas>=2.1
-plotly>=5.22
-numpy>=1.26
-faiss-cpu>=1.8
+streamlit==1.37.1
+pandas==2.2.2
+plotly==5.22.0
+numpy==1.26.4
+faiss-cpu==1.8.0.post1
 
-# LangChain stack pinned to 0.1.x layout
+# LangChain 0.1.x layout (compatible with your imports)
 langchain==0.1.20
 langchain-community==0.0.38
-langchain-openai>=0.1.7
-langchain-huggingface>=0.0.6
+langchain-openai==0.1.7
 
-openai>=1.40
-sentence-transformers>=2.5
-torch>=2.2
-
+openai==1.40.6
