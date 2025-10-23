@@ -14,8 +14,8 @@ import os
 
 # Page configuration
 st.set_page_config(
-    page_title="InsightForge - AI Business Intelligence",
-    page_icon="📊",
+    page_title="Grothko Consulting: B.I.G  -  Business Intelligence Generator",
+    page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -597,7 +597,7 @@ with st.sidebar:
     st.title("Navigation")
 
     # API Key input (prefer secrets)
-    st.subheader("🔑 API Configuration")
+    st.subheader("🗝️ API Configuration")
     
     # --- Navigation ---
     pages = ["Dashboard", "Data Analysis", "AI Assistant", "Visualizations"]
@@ -609,11 +609,11 @@ with st.sidebar:
     api_key = get_openai_api_key()
     if api_key:
         os.environ["OPENAI_API_KEY"] = api_key
-        st.success("✅ Using OpenAI API key from Streamlit Secrets")
+        st.success("💪 Using OpenAI API key from Streamlit Secrets")
     else:
         st.info("ℹ️ You can store your key in Streamlit Secrets as `OPENAI_API_KEY` (or under `openai.api_key`).")
 
-    st.subheader("📁 Data Upload")
+    st.subheader("🗄️ Data Upload")
     uploaded_file = st.file_uploader(
         "Upload your dataset (CSV)", type=['csv'],
         help="Upload a CSV file containing your business data"
@@ -624,11 +624,11 @@ with st.sidebar:
             df = pd.read_csv(uploaded_file)
             st.session_state.df = df
             st.session_state.data_loaded = True
-            st.success(f"✅ Data loaded: {df.shape[0]} rows, {df.shape[1]} columns")
+            st.success(f"☑️ Data loaded: {df.shape[0]} rows, {df.shape[1]} columns")
             if st.session_state.vectorstore is None:
                 with st.spinner("Setting up AI system..."):
                     if setup_rag_system(df, api_key):
-                        st.success("🤖 AI system ready!")
+                        st.success("🦾 AI system ready!")
         except Exception as e:
             st.error(f"Error loading file: {e}")
     elif uploaded_file is not None and not api_key:
@@ -637,7 +637,7 @@ with st.sidebar:
 # -------------------------
 # Main content
 # -------------------------
-st.markdown('<h1 class="main-header">📊 InsightForge - AI-Powered Business Intelligence</h1>', unsafe_allow_html=True)
+st.markdown('<h1 class="main-header">🤓 Grothko Consulting B.I.G.  - Business Intelligence Generator</h1>', unsafe_allow_html=True)
 
 # Dashboard Page
 page = st.session_state.get("page", "Dashboard")
@@ -656,8 +656,8 @@ if page == "Dashboard":
             completeness=(1 - df.isnull().sum().sum() / max(1,(df.shape[0]*df.shape[1]))) * 100
             st.metric(label="Data Quality", value=f"{completeness:.1f}%", delta="Complete")
         st.divider()
-        st.subheader("📋 Data Preview"); st.dataframe(df.head(10), use_container_width=True)
-        st.subheader("📊 Quick Statistics"); st.dataframe(df.describe(), use_container_width=True)
+        st.subheader("🗃️ Data Preview"); st.dataframe(df.head(10), use_container_width=True)
+        st.subheader("💡 Quick Statistics"); st.dataframe(df.describe(), use_container_width=True)
     else:
         st.info("👈 Please upload a dataset and enter your OpenAI API Key to get started.")
         st.markdown("""
@@ -670,7 +670,7 @@ if page == "Dashboard":
 
 # Data Analysis Page
 elif page == "Data Analysis":
-    st.header("🔍 Advanced Data Analysis")
+    st.header("🛰️ Advanced Data Analysis")
     if st.session_state.data_loaded:
         df = st.session_state.df
         tab1,tab2,tab3 = st.tabs(["Column Analysis","Missing Data","Correlations"])
