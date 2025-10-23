@@ -152,14 +152,15 @@ def answer_with_rag(question: str):
 
     if retriever is not None:
         try:
-            source_docs = retriever.get_relevant_documents(question)
-            context = "\n\n".join(doc.page_content for doc in source_docs)
+            # LANGCHAIN v0.2+ retrievers are Runnables → use .invoke()
+            source_docs = retriever.invoke(question)  # ← FIXED
+            context = "\n\n".join(getattr(doc, "page_content", str(doc)) for doc in source_docs)
         except Exception as e:
             context = ""
             source_docs = []
             st.error(f"Retrieval error: {e}")
 
-    # Incorporate brief chat history (last 6 turns) to keep it lightweight
+    # Incorporate brief chat history (last 6 turns)
     history_tail = st.session_state.chat_history[-6:]
     history_text = "\n".join([f"{m['role'].capitalize()}: {m['content']}" for m in history_tail])
 
@@ -367,7 +368,7 @@ elif page == "AI Assistant":
                         with st.expander("📚 View Source Context"):
                             for i, doc in enumerate(source_docs):
                                 st.markdown(f"**Source {i+1}:**")
-                                st.text(doc.page_content[:300] + "...")
+                                st.text(getattr(doc, "page_content", str(doc))[:300] + "...")
 
                     st.session_state.chat_history.append({"role": "assistant", "content": answer})
 
@@ -449,4 +450,3 @@ st.markdown("""
     <p>InsightForge - AI-Powered Business Intelligence | Built with Streamlit & LangChain (OpenAI)</p>
 </div>
 """, unsafe_allow_html=True)
-
