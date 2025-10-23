@@ -624,7 +624,7 @@ with st.sidebar:
     api_key = get_openai_api_key()
     if api_key:
         os.environ["OPENAI_API_KEY"] = api_key
-        st.success("💪 Using OpenAI API key from Streamlit Secrets")
+        st.success("💪 API key verified")
     else:
         st.info("ℹ️ You can store your key in Streamlit Secrets as `OPENAI_API_KEY` (or under `openai.api_key`).")
 
