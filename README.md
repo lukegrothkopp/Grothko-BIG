@@ -18,4 +18,4 @@ streamlit run app.py
 
 ## Deploy
 - Keep OPENAI_API_KEY in Streamlit **Secrets**.
-- This code reads secrets first, then env vars.
+- This code reads secrets first
