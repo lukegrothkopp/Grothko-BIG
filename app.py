@@ -218,14 +218,14 @@ def answer_with_rag(question: str):
     )
 
     try:
-        resp = llm.invoke(prompt)
+        resp = st.session_state.llm.invoke(prompt)
         answer = getattr(resp, "content", str(resp))
         return answer, source_docs
     except Exception as e:
         return f"Error generating response: {e}", source_docs
 
 # -------------------------
-# NEW: Structured Analytics Engine
+# Structured Analytics Engine
 # -------------------------
 def handle_analytics_query(question: str, df: pd.DataFrame):
     """
@@ -235,7 +235,6 @@ def handle_analytics_query(question: str, df: pd.DataFrame):
     q = question.lower().strip()
 
     # --- Correlation between X and Y ---
-    # Ex: "Is there a correlation between age and discount percentage?"
     m = re.search(r'correlat\w*\s+.*\bbetween\b\s+(.+?)\s+\b(and|&)\b\s+(.+)', q)
     if m:
         raw_x = m.group(1)
@@ -338,38 +337,34 @@ def handle_analytics_query(question: str, df: pd.DataFrame):
         return True, msg
 
     # --- "trends or patterns" ---
-    if re.search(r'\btrend|pattern', q):
+    # (Fixed try/except structure to avoid SyntaxError)
+    if re.search(r'\btrends?\b|\bpatterns?\b', q):
         bullets = []
         num_df = df.select_dtypes(include=[np.number])
         date_col = _first_datetime_col(df)
         if date_col:
-            # ensure datetime
             try:
                 df2 = df.copy()
                 df2[date_col] = pd.to_datetime(df2[date_col], errors='coerce')
-                # pick first numeric to trend
                 if num_df.shape[1] >= 1:
                     ycol = num_df.columns[0]
                     ts = df2.dropna(subset=[date_col, ycol]).sort_values(date_col)
                     if len(ts) >= 3:
-                        # month agg if possible
                         ts['__period'] = ts[date_col].dt.to_period('M').dt.to_timestamp()
                         agg = ts.groupby('__period')[ycol].mean()
                         direction = "increasing" if agg.iloc[-1] > agg.iloc[0] else "decreasing"
                         bullets.append(f"**Time trend** in **{ycol}**: appears {direction} from first to last observed month.")
                         try:
-                            fig = px.line(agg.reset_index(), x='__period', y=ycol,
-                                          title=f"Trend of {ycol} over time")
+                            fig = px.line(agg.reset_index(), x='__period', y=ycol, title=f"Trend of {ycol} over time")
                             st.plotly_chart(fig, use_container_width=True)
                         except Exception:
                             pass
-        except Exception:
-            pass
+            except Exception:
+                pass
 
         # correlation highlight
         if num_df.shape[1] >= 2:
             corr = num_df.corr()
-            # choose a notable pair (highest absolute excluding diagonal)
             corr_abs = corr.abs()
             np.fill_diagonal(corr_abs.values, 0)
             max_pair = divmod(corr_abs.values.argmax(), corr_abs.shape[1])
@@ -653,4 +648,3 @@ st.markdown("""
     <p>InsightForge - AI-Powered Business Intelligence | Built with Streamlit & LangChain (OpenAI)</p>
 </div>
 """, unsafe_allow_html=True)
-
