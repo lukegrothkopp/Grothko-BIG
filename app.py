@@ -39,6 +39,27 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
+# --- API key loader: prefer Streamlit Secrets, then env var, then sidebar fallback ---
+def get_openai_api_key():
+    """
+    Load the OpenAI API key with the following precedence:
+    1) st.secrets["OPENAI_API_KEY"]
+    2) st.secrets["openai"]["api_key"]
+    3) os.environ["OPENAI_API_KEY"] (if already set by your host)
+    Returns None if not found.
+    """
+    key = None
+    try:
+        # Common flat key
+        key = st.secrets["OPENAI_API_KEY"]
+    except Exception:
+        try:
+            # Optional nested structure: [openai]["api_key"]
+            key = st.secrets["openai"]["api_key"]
+        except Exception:
+            key = os.environ.get("OPENAI_API_KEY")
+    return key
+
 # -------------------------
 # Session State
 # -------------------------
@@ -455,19 +476,16 @@ with st.sidebar:
     st.image("https://via.placeholder.com/150x50?text=InsightForge", width=150)
     st.title("Navigation")
 
+    # API Key input (prefer secrets)
     st.subheader("🔑 API Configuration")
-    api_key = st.text_input(
-        "Enter OpenAI API Key:",
-        type="password",
-        help="Create a key at https://platform.openai.com/api-keys"
-    )
-    if api_key:
-        os.environ["OPENAI_API_KEY"]=api_key
-        st.success("✅ API Key configured")
 
-    st.divider()
-    page = st.radio("Select Page:", ["Dashboard","Data Analysis","AI Assistant","Visualizations"])
-    st.divider()
+    # Prefer Streamlit Secrets (or env) first
+    api_key = get_openai_api_key()
+    if api_key:
+        os.environ["OPENAI_API_KEY"] = api_key
+        st.success("✅ Using OpenAI API key from Streamlit Secrets")
+    else:
+        st.info("ℹ️ You can store your key in Streamlit Secrets as `OPENAI_API_KEY` (or under `openai.api_key`).")
 
     st.subheader("📁 Data Upload")
     uploaded_file = st.file_uploader(
