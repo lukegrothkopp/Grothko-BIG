@@ -8,6 +8,7 @@ from datetime import datetime
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+import re
 import numpy as np
 import os
 
@@ -38,9 +39,11 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# Initialize session state
+# -------------------------
+# Session State
+# -------------------------
 if 'chat_history' not in st.session_state:
-    st.session_state.chat_history = []  # list[{"role": "user"|"assistant", "content": str}]
+    st.session_state.chat_history = []  # list of {"role": "user"|"assistant", "content": str}
 if 'data_loaded' not in st.session_state:
     st.session_state.data_loaded = False
 if 'vectorstore' not in st.session_state:
@@ -52,7 +55,41 @@ if 'llm' not in st.session_state:
 if 'data_summary' not in st.session_state:
     st.session_state.data_summary = ""
 
-# Function to create data summary
+# -------------------------
+# Utilities
+# -------------------------
+def _norm(s: str) -> str:
+    """Normalize column names for fuzzy matching."""
+    return re.sub(r'[^a-z0-9]', '', str(s).lower())
+
+def _find_col(df: pd.DataFrame, name: str):
+    """Find a column by fuzzy / case-insensitive match (handles underscores, spaces, %)."""
+    target = _norm(name)
+    # Exact normalized match
+    for c in df.columns:
+        if _norm(c) == target:
+            return c
+    # Contains match
+    for c in df.columns:
+        if target in _norm(c):
+            return c
+    return None
+
+def _first_datetime_col(df: pd.DataFrame):
+    for c in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[c]):
+            return c
+        # try parse sample
+        try:
+            pd.to_datetime(df[c], errors='raise')
+            return c
+        except Exception:
+            continue
+    return None
+
+# -------------------------
+# Data Summary for RAG
+# -------------------------
 def create_data_summary(df: pd.DataFrame) -> str:
     """Create a comprehensive text summary of the dataset for RAG"""
     summary_parts = []
@@ -99,7 +136,9 @@ def create_data_summary(df: pd.DataFrame) -> str:
     summary_parts.append(f"  - Data completeness: {completeness:.1f}%")
     return "\n".join(summary_parts)
 
-# Function to setup RAG system (no langchain.chains / memory)
+# -------------------------
+# RAG Setup (no chains/memory imports)
+# -------------------------
 def setup_rag_system(df: pd.DataFrame, api_key: str) -> bool:
     """Setup RAG using FAISS retriever + OpenAI embeddings + ChatOpenAI"""
     try:
@@ -144,7 +183,7 @@ Column Data Types and Info:
         return False
 
 def answer_with_rag(question: str):
-    """Minimal RAG loop: retrieve → stuff into prompt → call LLM. Returns (answer, source_docs)"""
+    """Minimal RAG loop: retrieve → prompt → call LLM. Returns (answer, source_docs)"""
     retriever = st.session_state.retriever
     llm = st.session_state.llm
     source_docs = []
@@ -153,14 +192,14 @@ def answer_with_rag(question: str):
     if retriever is not None:
         try:
             # LANGCHAIN v0.2+ retrievers are Runnables → use .invoke()
-            source_docs = retriever.invoke(question)  # ← FIXED
+            source_docs = retriever.invoke(question)
             context = "\n\n".join(getattr(doc, "page_content", str(doc)) for doc in source_docs)
         except Exception as e:
             context = ""
             source_docs = []
             st.error(f"Retrieval error: {e}")
 
-    # Incorporate brief chat history (last 6 turns)
+    # brief history
     history_tail = st.session_state.chat_history[-6:]
     history_text = "\n".join([f"{m['role'].capitalize()}: {m['content']}" for m in history_tail])
 
@@ -185,7 +224,170 @@ def answer_with_rag(question: str):
     except Exception as e:
         return f"Error generating response: {e}", source_docs
 
+# -------------------------
+# NEW: Structured Analytics Engine
+# -------------------------
+def handle_analytics_query(question: str, df: pd.DataFrame):
+    """
+    Detects and executes common analytics requests on the *actual* dataframe.
+    Returns (handled: bool, message: str)
+    """
+    q = question.lower().strip()
+
+    # --- Correlation between X and Y ---
+    # Ex: "Is there a correlation between age and discount percentage?"
+    m = re.search(r'correlat\w*\s+.*\bbetween\b\s+(.+?)\s+\b(and|&)\b\s+(.+)', q)
+    if m:
+        raw_x = m.group(1)
+        raw_y = m.group(3)
+        col_x = _find_col(df, raw_x)
+        col_y = _find_col(df, raw_y)
+
+        if not col_x or not col_y:
+            return True, ("I couldn't match both columns in your dataset.\n"
+                          f"Matched X: `{col_x or 'None'}` | Matched Y: `{col_y or 'None'}`.\n"
+                          f"Available columns: {list(df.columns)}")
+
+        # Coerce to numeric
+        x = pd.to_numeric(df[col_x], errors='coerce')
+        y = pd.to_numeric(df[col_y], errors='coerce')
+        valid = x.notna() & y.notna()
+
+        if valid.sum() < 3:
+            return True, f"Not enough overlapping numeric values to compute correlation between `{col_x}` and `{col_y}`."
+
+        r = x[valid].corr(y[valid], method='pearson')
+        msg = f"**Pearson correlation (r) between `{col_x}` and `{col_y}`:** **{r:.3f}** (n={valid.sum()})"
+        st.write(msg)
+
+        # Optional scatter chart
+        try:
+            fig = px.scatter(
+                pd.DataFrame({col_x: x[valid], col_y: y[valid]}),
+                x=col_x, y=col_y,
+                title=f"Scatter: {col_x} vs {col_y}"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception:
+            pass
+
+        return True, msg
+
+    # --- Explicit request to "calculate Pearson correlation between 'x' and 'y'" ---
+    m2 = re.search(r'(pearson|corr(?!elation)\b).*?(between|for)\s+[\'"]?([\w %_]+)[\'"]?\s+(and|,)\s+[\'"]?([\w %_]+)[\'"]?', q)
+    if m2:
+        raw_x = m2.group(3)
+        raw_y = m2.group(5)
+        col_x = _find_col(df, raw_x)
+        col_y = _find_col(df, raw_y)
+        if not col_x or not col_y:
+            return True, ("I couldn't match both columns in your dataset.\n"
+                          f"Matched X: `{col_x or 'None'}` | Matched Y: `{col_y or 'None'}`.\n"
+                          f"Available columns: {list(df.columns)}")
+
+        x = pd.to_numeric(df[col_x], errors='coerce')
+        y = pd.to_numeric(df[col_y], errors='coerce')
+        valid = x.notna() & y.notna()
+        if valid.sum() < 3:
+            return True, f"Not enough overlapping numeric values to compute correlation between `{col_x}` and `{col_y}`."
+
+        r = x[valid].corr(y[valid], method='pearson')
+        msg = f"**Pearson correlation (r) between `{col_x}` and `{col_y}`:** **{r:.3f}** (n={valid.sum()})"
+        st.write(msg)
+        try:
+            fig = px.scatter(
+                pd.DataFrame({col_x: x[valid], col_y: y[valid]}),
+                x=col_x, y=col_y,
+                title=f"Scatter: {col_x} vs {col_y}"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception:
+            pass
+        return True, msg
+
+    # --- "top 3 insights" ---
+    if re.search(r'\btop\s*3\s*insight', q):
+        insights = []
+
+        # 1) Strongest numeric correlation pair
+        num_df = df.select_dtypes(include=[np.number])
+        if num_df.shape[1] >= 2:
+            corr = num_df.corr().abs()
+            np.fill_diagonal(corr.values, 0)
+            max_pair = divmod(corr.values.argmax(), corr.shape[1])
+            col_a, col_b = num_df.columns[max_pair[0]], num_df.columns[max_pair[1]]
+            insights.append(f"Strongest numeric relationship: **{col_a}** vs **{col_b}** (|r| ≈ **{corr.values.max():.3f}**).")
+
+        # 2) Top category in first categorical column
+        cat_cols = df.select_dtypes(include=['object']).columns.tolist()
+        if cat_cols:
+            vc = df[cat_cols[0]].value_counts(dropna=True).head(3)
+            insights.append(f"Top categories in **{cat_cols[0]}**: " + ", ".join([f"{k} ({v})" for k, v in vc.items()]))
+
+        # 3) Highest mean in first numeric column (by first categorical if available)
+        if num_df.shape[1] >= 1 and cat_cols:
+            grp = df.groupby(cat_cols[0])[num_df.columns[0]].mean().sort_values(ascending=False).head(3)
+            insights.append(f"Highest average **{num_df.columns[0]}** by **{cat_cols[0]}**: " +
+                            ", ".join([f"{idx} ({val:.2f})" for idx, val in grp.items()]))
+
+        if not insights:
+            return True, "I couldn't derive quick insights—dataset might lack numeric/categorical variety."
+
+        msg = "### Top 3 Insights\n" + "\n".join([f"1. {insights[0]}" if i == 0 else f"{i+1}. {insight}"
+                                                  for i, insight in enumerate(insights[:3])])
+        return True, msg
+
+    # --- "trends or patterns" ---
+    if re.search(r'\btrend|pattern', q):
+        bullets = []
+        num_df = df.select_dtypes(include=[np.number])
+        date_col = _first_datetime_col(df)
+        if date_col:
+            # ensure datetime
+            try:
+                df2 = df.copy()
+                df2[date_col] = pd.to_datetime(df2[date_col], errors='coerce')
+                # pick first numeric to trend
+                if num_df.shape[1] >= 1:
+                    ycol = num_df.columns[0]
+                    ts = df2.dropna(subset=[date_col, ycol]).sort_values(date_col)
+                    if len(ts) >= 3:
+                        # month agg if possible
+                        ts['__period'] = ts[date_col].dt.to_period('M').dt.to_timestamp()
+                        agg = ts.groupby('__period')[ycol].mean()
+                        direction = "increasing" if agg.iloc[-1] > agg.iloc[0] else "decreasing"
+                        bullets.append(f"**Time trend** in **{ycol}**: appears {direction} from first to last observed month.")
+                        try:
+                            fig = px.line(agg.reset_index(), x='__period', y=ycol,
+                                          title=f"Trend of {ycol} over time")
+                            st.plotly_chart(fig, use_container_width=True)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        # correlation highlight
+        if num_df.shape[1] >= 2:
+            corr = num_df.corr()
+            # choose a notable pair (highest absolute excluding diagonal)
+            corr_abs = corr.abs()
+            np.fill_diagonal(corr_abs.values, 0)
+            max_pair = divmod(corr_abs.values.argmax(), corr_abs.shape[1])
+            col_a, col_b = num_df.columns[max_pair[0]], num_df.columns[max_pair[1]]
+            bullets.append(f"**Strongest numeric relationship**: {col_a} vs {col_b} (|r| ≈ {corr_abs.values.max():.3f}).")
+
+        if not bullets:
+            bullets.append("No clear trends/patterns detected automatically. Try asking about specific columns or groups.")
+
+        msg = "### Detected Trends & Patterns\n" + "\n".join([f"- {b}" for b in bullets])
+        return True, msg
+
+    # Not handled here
+    return False, ""
+
+# -------------------------
 # Sidebar
+# -------------------------
 with st.sidebar:
     st.image("https://via.placeholder.com/150x50?text=InsightForge", width=150)
     st.title("Navigation")
@@ -236,7 +438,9 @@ with st.sidebar:
     elif uploaded_file is not None and not api_key:
         st.warning("⚠️ Please enter your OpenAI API Key first")
 
+# -------------------------
 # Main content
+# -------------------------
 st.markdown('<h1 class="main-header">📊 InsightForge - AI-Powered Business Intelligence</h1>', unsafe_allow_html=True)
 
 # Dashboard Page
@@ -247,30 +451,24 @@ if page == "Dashboard":
         df = st.session_state.df
 
         col1, col2, col3, col4 = st.columns(4)
-
         with col1:
             st.metric(label="Total Records", value=f"{len(df):,}", delta="Active")
-
         with col2:
             st.metric(label="Data Columns", value=df.shape[1], delta="Features")
-
         with col3:
             numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns
             if len(numeric_cols) > 0:
                 st.metric(label=f"Avg {numeric_cols[0]}", value=f"{df[numeric_cols[0]].mean():.2f}")
-
         with col4:
             completeness = (1 - df.isnull().sum().sum() / max(1, (df.shape[0] * df.shape[1]))) * 100
             st.metric(label="Data Quality", value=f"{completeness:.1f}%", delta="Complete")
 
         st.divider()
-
         st.subheader("📋 Data Preview")
         st.dataframe(df.head(10), use_container_width=True)
 
         st.subheader("📊 Quick Statistics")
         st.dataframe(df.describe(), use_container_width=True)
-
     else:
         st.info("👈 Please upload a dataset and enter your OpenAI API Key to get started.")
         st.markdown("""
@@ -321,7 +519,6 @@ elif page == "Data Analysis":
         with tab3:
             st.subheader("Correlation Analysis")
             numeric_df = df.select_dtypes(include=['float64', 'int64'])
-
             if len(numeric_df.columns) > 1:
                 corr_matrix = numeric_df.corr()
                 fig = px.imshow(
@@ -342,7 +539,7 @@ elif page == "AI Assistant":
     st.header("🤖 AI-Powered Business Intelligence Assistant")
 
     if st.session_state.data_loaded and api_key and st.session_state.retriever and st.session_state.llm:
-        st.info("💡 Ask questions about your data and get AI-powered insights with RAG!")
+        st.info("💡 Ask questions about your data and get AI-powered insights with RAG! I can also run common analyses directly (correlations, top insights, basic trends).")
 
         # Display chat history
         for message in st.session_state.chat_history:
@@ -357,20 +554,26 @@ elif page == "AI Assistant":
             with st.chat_message("user"):
                 st.write(user_question)
 
-            # Get AI response via minimal RAG
-            with st.chat_message("assistant"):
-                with st.spinner("Analyzing your data..."):
-                    answer, source_docs = answer_with_rag(user_question)
-                    st.write(answer)
+            handled, msg = handle_analytics_query(user_question, st.session_state.df)
 
-                    # Show source documents if available
-                    if source_docs:
-                        with st.expander("📚 View Source Context"):
-                            for i, doc in enumerate(source_docs):
-                                st.markdown(f"**Source {i+1}:**")
-                                st.text(getattr(doc, "page_content", str(doc))[:300] + "...")
+            # If handled by analytics engine, show result; else fall back to RAG
+            if handled:
+                with st.chat_message("assistant"):
+                    st.write(msg)
+                st.session_state.chat_history.append({"role": "assistant", "content": msg})
+            else:
+                with st.chat_message("assistant"):
+                    with st.spinner("Analyzing your data..."):
+                        answer, source_docs = answer_with_rag(user_question)
+                        st.write(answer)
 
-                    st.session_state.chat_history.append({"role": "assistant", "content": answer})
+                        if source_docs:
+                            with st.expander("📚 View Source Context"):
+                                for i, doc in enumerate(source_docs):
+                                    st.markdown(f"**Source {i+1}:**")
+                                    st.text(getattr(doc, "page_content", str(doc))[:300] + "...")
+
+                        st.session_state.chat_history.append({"role": "assistant", "content": answer})
 
         # Clear chat button
         col1, col2 = st.columns([6, 1])
@@ -450,3 +653,4 @@ st.markdown("""
     <p>InsightForge - AI-Powered Business Intelligence | Built with Streamlit & LangChain (OpenAI)</p>
 </div>
 """, unsafe_allow_html=True)
+
