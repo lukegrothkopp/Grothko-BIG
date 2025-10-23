@@ -1,235 +1,484 @@
-import os
-from datetime import datetime
-import numpy as np
+# app.py code
+
+import streamlit as st
 import pandas as pd
 import plotly.express as px
-import streamlit as st
+import plotly.graph_objects as go
+from datetime import datetime
+import google.generativeai as genai
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain.chains import ConversationalRetrievalChain
+from langchain.memory import ConversationBufferMemory
+import numpy as np
+import os
 
-from src.utils import set_secrets_env
-from src.llm import chat
-from src.rag import build_index, retrieve
-from src.analysis import column_overview, numeric_corr
-from src.viz import missing_plot
-
+# Page configuration
 st.set_page_config(
-    page_title="InsightForge (OpenAI) – BI Copilot",
+    page_title="InsightForge - AI Business Intelligence",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="expanded"
 )
 
-# ---- Secrets -> env for OpenAI SDK ----
-set_secrets_env()
-
-# ---- CSS (light) ----
+# Custom CSS
 st.markdown("""
-<style>
-.main-header { font-size: 2.2rem; font-weight: 700; margin-bottom: .5rem; }
-.subtle { color: #6b7280; }
-.metric-card { background: #f8fafc; padding: 10px 14px; border-radius: 10px; }
-</style>
-""", unsafe_allow_html=True)
+    <style>
+    .main-header {
+        font-size: 2.5rem;
+        font-weight: bold;
+        color: #1f77b4;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .metric-card {
+        background-color: #f0f2f6;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin: 0.5rem 0;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-# ---- Session state ----
-for k, v in {
-    "df": None,
-    "rag_index": None,
-    "chat_history": [],
-    "model_name": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-}.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
+# map Streamlit secrets → env for SDKs
+if "OPENAI_API_KEY" in st.secrets:
+    os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
 
-# --- Sidebar (no logo) ---
+# Initialize session state
+if 'chat_history' not in st.session_state:
+    st.session_state.chat_history = []
+if 'data_loaded' not in st.session_state:
+    st.session_state.data_loaded = False
+if 'vectorstore' not in st.session_state:
+    st.session_state.vectorstore = None
+if 'conversation_chain' not in st.session_state:
+    st.session_state.conversation_chain = None
+if 'data_summary' not in st.session_state:
+    st.session_state.data_summary = ""
+
+# Function to create data summary
+def create_data_summary(df):
+    """Create a comprehensive text summary of the dataset for RAG"""
+    summary_parts = []
+    
+    # Basic information
+    summary_parts.append(f"Dataset Overview: The dataset contains {len(df)} records and {df.shape[1]} columns.")
+    summary_parts.append(f"Columns: {', '.join(df.columns.tolist())}")
+    
+    # Numeric columns analysis
+    numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns
+    if len(numeric_cols) > 0:
+        summary_parts.append("\nNumeric Columns Analysis:")
+        for col in numeric_cols:
+            summary_parts.append(f"\n{col}:")
+            summary_parts.append(f"  - Mean: {df[col].mean():.2f}")
+            summary_parts.append(f"  - Median: {df[col].median():.2f}")
+            summary_parts.append(f"  - Std Dev: {df[col].std():.2f}")
+            summary_parts.append(f"  - Min: {df[col].min():.2f}")
+            summary_parts.append(f"  - Max: {df[col].max():.2f}")
+    
+    # Categorical columns analysis
+    categorical_cols = df.select_dtypes(include=['object']).columns
+    if len(categorical_cols) > 0:
+        summary_parts.append("\nCategorical Columns Analysis:")
+        for col in categorical_cols:
+            unique_vals = df[col].nunique()
+            summary_parts.append(f"\n{col}:")
+            summary_parts.append(f"  - Unique values: {unique_vals}")
+            if unique_vals <= 10:
+                value_counts = df[col].value_counts()
+                summary_parts.append(f"  - Distribution: {value_counts.to_dict()}")
+    
+    # Missing data
+    missing = df.isnull().sum()
+    if missing.sum() > 0:
+        summary_parts.append("\nMissing Data:")
+        for col in missing[missing > 0].index:
+            summary_parts.append(f"  - {col}: {missing[col]} missing values")
+    
+    # Additional insights
+    summary_parts.append("\nKey Insights:")
+    summary_parts.append(f"  - Total rows: {len(df)}")
+    summary_parts.append(f"  - Data completeness: {(1 - df.isnull().sum().sum() / (df.shape[0] * df.shape[1])) * 100:.1f}%")
+    
+    return "\n".join(summary_parts)
+
+# Function to setup RAG system
+def setup_rag_system(df, api_key):
+    """Setup RAG system with Google Gemini and HuggingFace Embeddings"""
+    try:
+        # Configure Gemini
+        genai.configure(api_key=api_key)
+        
+        # Create data summary
+        data_summary = create_data_summary(df)
+        st.session_state.data_summary = data_summary
+        
+        # Create detailed data insights for better RAG
+        data_insights = f"""
+        {data_summary}
+        
+        Sample Data Records:
+        {df.head(20).to_string()}
+        
+        Column Data Types and Info:
+        {df.dtypes.to_string()}
+        """
+        
+        # Split text into chunks
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=200,
+            length_function=len
+        )
+        chunks = text_splitter.split_text(data_insights)
+        
+        # Create embeddings using HuggingFace (FREE and local)
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
+            model_kwargs={'device': 'cpu'},
+            encode_kwargs={'normalize_embeddings': True}
+        )
+        
+        # Create vector store
+        vectorstore = FAISS.from_texts(chunks, embeddings)
+        st.session_state.vectorstore = vectorstore
+        
+        # Setup LLM
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.0-flash-exp",
+            google_api_key=api_key,
+            temperature=0.7,
+            convert_system_message_to_human=True
+        )
+        
+        # Setup memory
+        memory = ConversationBufferMemory(
+            memory_key="chat_history",
+            return_messages=True,
+            output_key="answer"
+        )
+        
+        # Create conversation chain
+        conversation_chain = ConversationalRetrievalChain.from_llm(
+            llm=llm,
+            retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),
+            memory=memory,
+            return_source_documents=True,
+            verbose=True
+        )
+        
+        st.session_state.conversation_chain = conversation_chain
+        return True
+    except Exception as e:
+        st.error(f"Error setting up RAG system: {e}")
+        return False
+
+# Sidebar
 with st.sidebar:
-    st.title("InsightForge")
-    st.caption("AI-Powered Business Intelligence")
-
-    st.subheader("🔑 API")
-    key_present = "OPENAI_API_KEY" in st.secrets and bool(st.secrets["OPENAI_API_KEY"])
-    st.write("OpenAI key:", "✅ set" if key_present else "❌ missing")
-
+    st.image("https://via.placeholder.com/150x50?text=InsightForge", width=150)
+    st.title("Navigation")
+    
+    # API Key input
+    st.subheader("🔑 API Configuration")
+    api_key = st.text_input(
+        "Enter Google API Key:",
+        type="password",
+        help="Get your API key from https://makersuite.google.com/app/apikey"
+    )
+    
+    if api_key:
+        os.environ["GOOGLE_API_KEY"] = api_key
+        st.success("✅ API Key configured")
+    
     st.divider()
-    page = st.radio("Navigate", ["Dashboard", "Data Analysis", "AI Assistant", "Visualizations"])
-
+    
+    page = st.radio(
+        "Select Page:",
+        ["Dashboard", "Data Analysis", "AI Assistant", "Visualizations"]
+    )
+    
     st.divider()
-    st.subheader("📁 Upload CSV")
-    up = st.file_uploader("Upload a CSV dataset", type=["csv"])
-    if up is not None:
+    
+    # Data upload section
+    st.subheader("📁 Data Upload")
+    uploaded_file = st.file_uploader(
+        "Upload your dataset (CSV)",
+        type=['csv'],
+        help="Upload a CSV file containing your business data"
+    )
+    
+    if uploaded_file is not None and api_key:
         try:
-            import pandas as pd
-            df = pd.read_csv(up)
+            df = pd.read_csv(uploaded_file)
             st.session_state.df = df
-            st.success(f"Loaded {df.shape[0]:,} rows × {df.shape[1]} cols")
+            st.session_state.data_loaded = True
+            st.success(f"✅ Data loaded: {df.shape[0]} rows, {df.shape[1]} columns")
+            
+            # Setup RAG system
+            if st.session_state.vectorstore is None:
+                with st.spinner("Setting up AI system..."):
+                    if setup_rag_system(df, api_key):
+                        st.success("🤖 AI system ready!")
         except Exception as e:
-            st.error(f"Load error: {e}")
+            st.error(f"Error loading file: {e}")
+    elif uploaded_file is not None and not api_key:
+        st.warning("⚠️ Please enter your Google API Key first")
 
-    if st.session_state.get("df") is not None and st.button("⚙️ Build/Refresh AI Index"):
-        from src.rag import build_index
-        with st.spinner("Building local RAG index..."):
-            try:
-                st.session_state.rag_index = build_index(st.session_state.df)
-                st.success("RAG index ready.")
-            except Exception as e:
-                st.error(f"RAG build failed: {e}")
+# Main content
+st.markdown('<h1 class="main-header">📊 InsightForge - AI-Powered Business Intelligence</h1>', unsafe_allow_html=True)
 
-# ---- Pages ----
+# Dashboard Page
 if page == "Dashboard":
     st.header("📈 Business Intelligence Dashboard")
-    if st.session_state.df is None:
-        st.info("Upload a CSV to begin.")
-    else:
+    
+    if st.session_state.data_loaded:
         df = st.session_state.df
+        
+        # Display key metrics
         col1, col2, col3, col4 = st.columns(4)
-        with col1: st.metric("Total Records", f"{len(df):,}")
-        with col2: st.metric("Columns", df.shape[1])
+        
+        with col1:
+            st.metric(
+                label="Total Records",
+                value=f"{len(df):,}",
+                delta="Active"
+            )
+        
+        with col2:
+            st.metric(
+                label="Data Columns",
+                value=df.shape[1],
+                delta="Features"
+            )
+        
         with col3:
-            num_cols = df.select_dtypes(include=[np.number]).columns
-            if len(num_cols):
-                st.metric(f"Avg {num_cols[0]}", f"{df[num_cols[0]].mean():.2f}")
-            else:
-                st.metric("Numeric Cols", "None")
+            numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns
+            if len(numeric_cols) > 0:
+                st.metric(
+                    label=f"Avg {numeric_cols[0]}",
+                    value=f"{df[numeric_cols[0]].mean():.2f}"
+                )
+        
         with col4:
-            completeness = (1 - df.isna().sum().sum() / (df.shape[0]*df.shape[1])) * 100
-            st.metric("Data Quality", f"{completeness:.1f}%")
-
-        st.subheader("Preview")
+            st.metric(
+                label="Data Quality",
+                value=f"{(1 - df.isnull().sum().sum() / (df.shape[0] * df.shape[1])) * 100:.1f}%",
+                delta="Complete"
+            )
+        
+        st.divider()
+        
+        # Data preview
+        st.subheader("📋 Data Preview")
         st.dataframe(df.head(10), use_container_width=True)
+        
+        # Quick statistics
+        st.subheader("📊 Quick Statistics")
+        st.dataframe(df.describe(), use_container_width=True)
+        
+    else:
+        st.info("👈 Please upload a dataset and enter your Google API Key to get started.")
+        st.markdown("""
+        ### Getting Started
+        1. Get your Google API Key from [Google AI Studio](https://makersuite.google.com/app/apikey)
+        2. Enter the API key in the sidebar
+        3. Upload your CSV file
+        4. Explore AI-powered insights!
+        """)
 
-        st.subheader("Quick Stats")
-        try:
-            st.dataframe(df.describe(include="all").transpose(), use_container_width=True)
-        except Exception:
-            st.dataframe(df.describe().transpose(), use_container_width=True)
-
+# Data Analysis Page
 elif page == "Data Analysis":
     st.header("🔍 Advanced Data Analysis")
-    if st.session_state.df is None:
-        st.warning("Please upload a dataset first.")
-    else:
+    
+    if st.session_state.data_loaded:
         df = st.session_state.df
-        t1, t2, t3 = st.tabs(["Column Analysis", "Missing Data", "Correlations"])
-        with t1:
+        
+        tab1, tab2, tab3 = st.tabs(["Column Analysis", "Missing Data", "Correlations"])
+        
+        with tab1:
             st.subheader("Column Information")
-            st.dataframe(column_overview(df), use_container_width=True)
-        with t2:
-            st.subheader("Missing Data")
-            fig = missing_plot(df)
-            if fig:
+            col_info = pd.DataFrame({
+                'Column': df.columns,
+                'Type': df.dtypes,
+                'Non-Null Count': df.count(),
+                'Null Count': df.isnull().sum(),
+                'Unique Values': df.nunique()
+            })
+            st.dataframe(col_info, use_container_width=True)
+        
+        with tab2:
+            st.subheader("Missing Data Analysis")
+            missing_data = df.isnull().sum()
+            missing_data = missing_data[missing_data > 0].sort_values(ascending=False)
+            
+            if len(missing_data) > 0:
+                fig = px.bar(
+                    x=missing_data.values,
+                    y=missing_data.index,
+                    orientation='h',
+                    title="Missing Values by Column",
+                    labels={'x': 'Number of Missing Values', 'y': 'Column'}
+                )
                 st.plotly_chart(fig, use_container_width=True)
             else:
-                st.success("No missing values 🎉")
-        with t3:
-            st.subheader("Correlation Heatmap")
-            num = df.select_dtypes(include=[np.number])
-            if num.shape[1] > 1:
-                corr = numeric_corr(df)
-                fig = px.imshow(corr, text_auto=True, aspect="auto", title="Correlation Heatmap", color_continuous_scale="RdBu")
+                st.success("No missing data found! 🎉")
+        
+        with tab3:
+            st.subheader("Correlation Analysis")
+            numeric_df = df.select_dtypes(include=['float64', 'int64'])
+            
+            if len(numeric_df.columns) > 1:
+                corr_matrix = numeric_df.corr()
+                fig = px.imshow(
+                    corr_matrix,
+                    text_auto=True,
+                    aspect="auto",
+                    title="Correlation Heatmap",
+                    color_continuous_scale='RdBu'
+                )
                 st.plotly_chart(fig, use_container_width=True)
             else:
-                st.info("Not enough numeric columns.")
-
-elif page == "AI Assistant":
-    st.header("🤖 BI Assistant (RAG over your data summary)")
-    if st.session_state.df is None:
-        st.warning("Upload a dataset to enable the assistant.")
-    elif st.session_state.rag_index is None:
-        st.info("Click **Build/Refresh AI Index** in the sidebar.")
+                st.warning("Not enough numeric columns for correlation analysis.")
     else:
-        # render history
-        for msg in st.session_state.chat_history:
-            with st.chat_message(msg["role"]):
-                st.write(msg["content"])
-
-        user_q = st.chat_input("Ask a question about your data…")
-        if user_q:
-            with st.chat_message("user"):
-                st.write(user_q)
-            st.session_state.chat_history.append({"role": "user", "content": user_q})
-
-            # retrieve
-            top_chunks = retrieve(st.session_state.rag_index, user_q, k=4)
-            context = "\n\n".join([c for c, _ in top_chunks])
-
-            sys = (
-                "You are a precise data analyst. "
-                "Use the provided CONTEXT to ground your answer. "
-                "If a value is not in CONTEXT, say you cannot determine it without more data. "
-                "Format lists and tables clearly."
-            )
-            messages = [
-                {"role": "system", "content": sys},
-                {"role": "user", "content": f"Question: {user_q}\n\nCONTEXT:\n{context}"}
-            ]
-
-            with st.chat_message("assistant"):
-                try:
-                    ans = chat(messages, model=st.session_state["model_name"], temperature=0.2)
-                    st.write(ans)
-                    # show expandable context
-                    with st.expander("📚 View retrieved context"):
-                        for i, (c, score) in enumerate(top_chunks, 1):
-                            st.markdown(f"**Chunk {i} (score {score:.4f})**")
-                            st.text(c[:1200] + ("..." if len(c) > 1200 else ""))
-                    st.session_state.chat_history.append({"role": "assistant", "content": ans})
-                except Exception as e:
-                    st.error(f"LLM error: {e}")
-
-elif page == "Visualizations":
-    st.header("📊 Visualizations")
-    if st.session_state.df is None:
         st.warning("Please upload a dataset first.")
-    else:
-        df = st.session_state.df
-        viz_type = st.selectbox("Type", ["Line", "Bar", "Scatter", "Pie", "Histogram", "Box"])
-        cols_num = df.select_dtypes(include=[np.number]).columns.tolist()
-        cols_cat = df.select_dtypes(exclude=[np.number]).columns.tolist()
-        col1, col2 = st.columns(2)
 
-        with col1:
-            if viz_type in ["Line", "Bar"]:
-                x_col = st.selectbox("X-axis", df.columns)
-                y_col = st.selectbox("Y-axis (numeric)", cols_num) if cols_num else None
-            elif viz_type == "Scatter":
-                x_col = st.selectbox("X-axis (numeric)", cols_num) if cols_num else None
-                y_col = st.selectbox("Y-axis (numeric)", cols_num) if cols_num else None
-            elif viz_type == "Pie":
-                x_col = st.selectbox("Category", cols_cat or df.columns.tolist())
-                y_col = st.selectbox("Value (numeric)", cols_num) if cols_num else None
-            else:  # Histogram / Box
-                x_col = st.selectbox("Column (numeric)", cols_num or df.columns.tolist())
-                y_col = None
-
+# AI Assistant Page
+elif page == "AI Assistant":
+    st.header("🤖 AI-Powered Business Intelligence Assistant")
+    
+    if st.session_state.data_loaded and api_key and st.session_state.conversation_chain:
+        st.info("💡 Ask questions about your data and get AI-powered insights with RAG!")
+        
+        # Display chat history
+        for message in st.session_state.chat_history:
+            with st.chat_message(message["role"]):
+                st.write(message["content"])
+        
+        # User input
+        user_question = st.chat_input("Ask a question about your data...")
+        
+        if user_question:
+            # Add user message to chat
+            st.session_state.chat_history.append({
+                "role": "user",
+                "content": user_question
+            })
+            
+            with st.chat_message("user"):
+                st.write(user_question)
+            
+            # Get AI response
+            with st.chat_message("assistant"):
+                with st.spinner("Analyzing your data..."):
+                    try:
+                        # Query the conversation chain
+                        response = st.session_state.conversation_chain({
+                            "question": user_question
+                        })
+                        
+                        ai_response = response['answer']
+                        
+                        st.write(ai_response)
+                        
+                        # Show source documents if available
+                        if 'source_documents' in response and response['source_documents']:
+                            with st.expander("📚 View Source Context"):
+                                for i, doc in enumerate(response['source_documents']):
+                                    st.markdown(f"**Source {i+1}:**")
+                                    st.text(doc.page_content[:300] + "...")
+                        
+                        st.session_state.chat_history.append({
+                            "role": "assistant",
+                            "content": ai_response
+                        })
+                    except Exception as e:
+                        error_msg = f"Error generating response: {str(e)}"
+                        st.error(error_msg)
+                        st.session_state.chat_history.append({
+                            "role": "assistant",
+                            "content": error_msg
+                        })
+        
+        # Clear chat button
+        col1, col2 = st.columns([6, 1])
         with col2:
-            color_by = st.selectbox("Color (optional)", ["None"] + df.columns.tolist())
-            color_by = None if color_by == "None" else color_by
+            if st.button("🗑️ Clear Chat"):
+                st.session_state.chat_history = []
+                st.rerun()
+    else:
+        if not api_key:
+            st.warning("⚠️ Please enter your Google API Key in the sidebar.")
+        elif not st.session_state.data_loaded:
+            st.warning("⚠️ Please upload a dataset first.")
+        else:
+            st.warning("⚠️ AI system is not ready. Please reload the page.")
 
-        st.subheader("Chart")
+# Visualizations Page
+elif page == "Visualizations":
+    st.header("📊 Data Visualizations")
+    
+    if st.session_state.data_loaded:
+        df = st.session_state.df
+        
+        viz_type = st.selectbox(
+            "Select Visualization Type:",
+            ["Line Chart", "Bar Chart", "Scatter Plot", "Pie Chart", "Histogram", "Box Plot"]
+        )
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns.tolist()
+            categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
+            
+            if viz_type in ["Line Chart", "Bar Chart"]:
+                x_col = st.selectbox("Select X-axis:", df.columns.tolist())
+                y_col = st.selectbox("Select Y-axis:", numeric_cols) if numeric_cols else None
+            elif viz_type == "Scatter Plot":
+                x_col = st.selectbox("Select X-axis:", numeric_cols)
+                y_col = st.selectbox("Select Y-axis:", numeric_cols)
+            elif viz_type == "Pie Chart":
+                x_col = st.selectbox("Select Category:", categorical_cols if categorical_cols else df.columns.tolist())
+                y_col = st.selectbox("Select Value:", numeric_cols) if numeric_cols else None
+            elif viz_type in ["Histogram", "Box Plot"]:
+                x_col = st.selectbox("Select Column:", numeric_cols if numeric_cols else df.columns.tolist())
+                y_col = None
+        
+        with col2:
+            color_col = st.selectbox("Color by (optional):", ["None"] + df.columns.tolist())
+            color_col = None if color_col == "None" else color_col
+        
+        st.subheader(f"{viz_type} Visualization")
+        
         try:
-            if viz_type == "Line" and y_col:
-                fig = px.line(df, x=x_col, y=y_col, color=color_by, title=f"{y_col} over {x_col}")
-            elif viz_type == "Bar" and y_col:
-                fig = px.bar(df, x=x_col, y=y_col, color=color_by, title=f"{y_col} by {x_col}")
-            elif viz_type == "Scatter" and (x_col and y_col):
-                fig = px.scatter(df, x=x_col, y=y_col, color=color_by, title=f"{y_col} vs {x_col}")
-            elif viz_type == "Pie" and y_col:
-                fig = px.pie(df, names=x_col, values=y_col, title=f"{y_col} distribution by {x_col}")
+            if viz_type == "Line Chart" and y_col:
+                fig = px.line(df, x=x_col, y=y_col, color=color_col, title=f"{y_col} over {x_col}")
+            elif viz_type == "Bar Chart" and y_col:
+                fig = px.bar(df, x=x_col, y=y_col, color=color_col, title=f"{y_col} by {x_col}")
+            elif viz_type == "Scatter Plot":
+                fig = px.scatter(df, x=x_col, y=y_col, color=color_col, title=f"{y_col} vs {x_col}")
+            elif viz_type == "Pie Chart" and y_col:
+                fig = px.pie(df, names=x_col, values=y_col, title=f"Distribution of {y_col}")
             elif viz_type == "Histogram":
-                fig = px.histogram(df, x=x_col, color=color_by, title=f"Distribution of {x_col}")
-            elif viz_type == "Box":
-                fig = px.box(df, y=x_col, color=color_by, title=f"Box plot of {x_col}")
-            else:
-                fig = None
-            if fig:
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("Select appropriate fields to plot.")
+                fig = px.histogram(df, x=x_col, color=color_col, title=f"Distribution of {x_col}")
+            elif viz_type == "Box Plot":
+                fig = px.box(df, y=x_col, color=color_col, title=f"Box Plot of {x_col}")
+            
+            st.plotly_chart(fig, use_container_width=True)
         except Exception as e:
-            st.error(f"Visualization error: {e}")
+            st.error(f"Error generating visualization: {e}")
+    else:
+        st.warning("Please upload a dataset first.")
 
-# ---- Footer ----
+# Footer
 st.divider()
-st.markdown(
-    "<div style='text-align:center;color:#6b7280'>InsightForge • OpenAI • Streamlit • FAISS</div>",
-    unsafe_allow_html=True,
-)
+st.markdown("""
+<div style='text-align: center; color: #666;'>
+    <p>InsightForge - AI-Powered Business Intelligence with Google Gemini | Built with Streamlit & LangChain</p>
+</div>
+""", unsafe_allow_html=True)
+
+
