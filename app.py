@@ -657,7 +657,7 @@ st.markdown('<h1 class="main-header">Grothko Consulting Business Intelligence Ge
 # Dashboard Page
 page = st.session_state.get("page", "Dashboard")
 if page == "Dashboard":
-    st.header("📈 Business Intelligence Dashboard")
+    st.header("📈 BI Dashboard")
     if st.session_state.data_loaded:
         df = st.session_state.df
         c1,c2,c3,c4 = st.columns(4)
