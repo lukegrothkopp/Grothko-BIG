@@ -64,58 +64,169 @@ def _norm(s: str) -> str:
 
 def _find_col(df: pd.DataFrame, name: str):
     """
-    Fuzzy / case-insensitive column matcher.
-    Now handles common aliases like percent/percentage/perc <-> pct.
-    Returns the *actual* column name from df or None.
+    Fuzzy / case-insensitive column matcher with semantic aliases.
+    - Normalizes strings (lowercase, strip non-alnum).
+    - Handles percent/percentage/perc <-> pct.
+    - Maps common business terms (price, revenue, qty, date, etc.) to your actual columns if present.
+    Returns the actual column name from df or None.
     """
+    import re
+
     def _norm(s: str) -> str:
         return re.sub(r'[^a-z0-9]', '', str(s).lower())
 
+    # --- percent/percentage alias generator ---
     def _alias_set(s: str):
-        """Generate alias variants for a normalized string."""
         alts = {s}
-        # percent-family <-> pct
         if 'percentage' in s:
-            alts.add(s.replace('percentage', 'pct'))
-            alts.add(s.replace('percentage', 'percent'))
+            alts.update({s.replace('percentage', 'pct'),
+                         s.replace('percentage', 'percent')})
         if 'percent' in s:
-            alts.add(s.replace('percent', 'pct'))
-            alts.add(s.replace('percent', 'percentage'))
+            alts.update({s.replace('percent', 'pct'),
+                         s.replace('percent', 'percentage')})
         if 'perc' in s:
-            alts.add(s.replace('perc', 'pct'))
-            alts.add(s.replace('perc', 'percent'))
-            alts.add(s.replace('perc', 'percentage'))
+            alts.update({s.replace('perc', 'pct'),
+                         s.replace('perc', 'percent'),
+                         s.replace('perc', 'percentage')})
         if 'pct' in s:
-            alts.add(s.replace('pct', 'percent'))
-            alts.add(s.replace('pct', 'percentage'))
-            alts.add(s.replace('pct', 'perc'))
+            alts.update({s.replace('pct', 'percent'),
+                         s.replace('pct', 'percentage'),
+                         s.replace('pct', 'perc')})
         return alts
 
-    target = _norm(name)
-    target_alts = _alias_set(target)
+    # --- semantic aliases: concept -> preferred df column candidates (normalized) ---
+    # Add/adjust any you like; the function will only return ones that actually exist in df.
+    semantic_aliases = {
+        # pricing / revenue
+        'price':        ['unit_price', 'price', 'avg_price', 'averageprice'],
+        'revenue':      ['net_revenue', 'revenue', 'sales', 'totalrevenue', 'netsales'],
 
-    # Precompute normalized + alias variants for dataframe columns
-    col_map_exact = {}   # normalized/alias -> original column
-    col_norms = {}       # original column -> set of normalized/alias forms
+        # quantities / counts
+        'quantity':     ['units', 'quantity', 'qty', 'unitssold', 'unit_sold', 'units_sold'],
+        'qty':          ['units', 'quantity', 'qty', 'unitssold', 'units_sold'],
+
+        # dates
+        'date':         ['purchase_date', 'order_date', 'date', 'purchasedate', 'orderdate'],
+
+        # customer identifiers
+        'customer':     ['customer_id', 'customerid', 'cust_id', 'custid', 'id'],
+
+        # geography / demographics
+        'city':         ['city', 'town'],
+        'state':        ['state_province', 'state', 'province', 'region', 'stateprovince'],
+        'province':     ['state_province', 'province', 'state'],
+        'country':      ['country', 'nation'],
+        'income':       ['household_income', 'income', 'householdincome'],
+        'maritalstatus':['marital_status', 'maritalstatus'],
+        'children':     ['number_children', 'children', 'numchildren', 'childcount'],
+        'childrenages': ['children_ages', 'childrenages', 'kidsages'],
+
+        # membership / marketing
+        'subscription': ['subscription_member', 'member', 'ismember', 'loyalty'],
+        'marketing':    ['marketing_source', 'marketingsource', 'utm_source', 'source'],
+        'acquisition':  ['acquisition_channel', 'acquisitionchannel', 'channel', 'utm_medium'],
+        'format':       ['preferred_format', 'format'],
+
+        # discounts / coupons / gifting
+        'discount':     ['discount_pct', 'discount', 'discountpercent', 'discountpercentage', 'pctdiscount'],
+        'coupon':       ['coupon_used', 'coupon', 'promocode', 'discountcode'],
+        'gift':         ['gifting', 'gift', 'gifted'],
+
+        # feedback / recommendation
+        'feedbackscore':['feedback_score', 'rating', 'score', 'satisfaction'],
+        'feedback':     ['feedback_text', 'comment', 'review', 'feedback'],
+        'recommend':    ['would_recommend', 'recommend', 'nps', 'promoter', 'wouldrecommend'],
+        'nps':          ['would_recommend', 'nps'],
+
+        # behavior / lifecycle
+        'repeat':       ['repeat_buyer', 'repeat', 'returningcustomer', 'returning'],
+        'timetofinish': ['time_to_finish_days', 'timetofinish', 'completiontimedays', 'completiontime'],
+        'occupation':   ['occupation', 'job', 'profession'],
+    }
+
+    # Build fast lookup for actual df columns (normalized -> actual)
+    col_norm_to_actual = {}
     for c in df.columns:
-        cn = _norm(c)
-        alts = _alias_set(cn)
-        alts.add(cn)
-        col_norms[c] = alts
-        for a in alts:
-            # only set if not already mapped to prefer exact first occurrence
-            col_map_exact.setdefault(a, c)
+        col_norm_to_actual[_norm(c)] = c
 
-    # 1) Exact alias match
+    target = _norm(name)
+
+    # 1) Direct + percent aliases: try exact normalized or alias-equivalents
+    target_alts = _alias_set(target)
+    for ta in ([target] + list(target_alts)):
+        if ta in col_norm_to_actual:
+            return col_norm_to_actual[ta]
+
+    # 2) Contains match on normalized names (helpful for "discount percentage" -> "...pct")
+    for ta in ([target] + list(target_alts)):
+        for cnorm, actual in col_norm_to_actual.items():
+            if ta in cnorm or cnorm in ta:
+                return actual
+
+    # 3) Semantic matching: map the target to a concept key and then to preferred candidates
+    #    Choose the first candidate that exists in the dataframe.
+    def _concept_keys(t: str):
+        # try exact concept name, then substring hits
+        keys = []
+        # common concept normalizations
+        concept_map = {
+            'price': ['price', 'unitprice', 'avgprice'],
+            'revenue': ['revenue', 'netsales', 'sales', 'totalrevenue'],
+            'quantity': ['quantity', 'qty', 'units'],
+            'qty': ['qty', 'quantity', 'units'],
+            'date': ['date', 'orderdate', 'purchasedate'],
+            'customer': ['customer', 'customerid', 'custid'],
+            'state': ['state', 'province', 'stateprovince', 'region'],
+            'province': ['province', 'state'],
+            'country': ['country', 'nation'],
+            'income': ['income', 'householdincome'],
+            'maritalstatus': ['maritalstatus', 'marital'],
+            'children': ['children', 'numchildren', 'childcount'],
+            'childrenages': ['childrenages', 'kidsages'],
+            'subscription': ['subscription', 'member', 'loyalty'],
+            'marketing': ['marketing', 'utm', 'source'],
+            'acquisition': ['acquisition', 'channel', 'utm'],
+            'format': ['format', 'preferredformat'],
+            'discount': ['discount', 'discountpercent', 'discountpercentage', 'pctdiscount'],
+            'coupon': ['coupon', 'promocode', 'discountcode'],
+            'gift': ['gift', 'gifting', 'gifted'],
+            'feedbackscore': ['feedbackscore', 'rating', 'score', 'satisfaction'],
+            'feedback': ['feedback', 'comment', 'review'],
+            'recommend': ['recommend', 'wouldrecommend', 'nps', 'promoter'],
+            'nps': ['nps', 'recommend'],
+            'repeat': ['repeat', 'returning'],
+            'timetofinish': ['timetofinish', 'completiontime', 'completiontimedays'],
+            'occupation': ['occupation', 'job', 'profession'],
+        }
+        for key, hints in concept_map.items():
+            if t == key or any(h in t for h in hints):
+                keys.append(key)
+        return keys
+
+    concept_hits = _concept_keys(target)
+    # Also consider alias-expanded variants (e.g., percentage -> pct)
     for ta in target_alts:
-        if ta in col_map_exact:
-            return col_map_exact[ta]
+        concept_hits += _concept_keys(ta)
+    # keep order but unique
+    seen = set()
+    concept_hits = [x for x in concept_hits if not (x in seen or seen.add(x))]
 
-    # 2) Contains match against aliases
-    for c, alts in col_norms.items():
-        for a in alts:
-            if any(ta in a for ta in target_alts) or any(a in ta for ta in target_alts):
-                return c
+    for concept in concept_hits:
+        if concept in semantic_aliases:
+            for cand in semantic_aliases[concept]:
+                cn = _norm(cand)
+                # direct match
+                if cn in col_norm_to_actual:
+                    return col_norm_to_actual[cn]
+                # contains fallback (handles e.g., 'orderdate' vs 'purchase_date')
+                for cnorm, actual in col_norm_to_actual.items():
+                    if cn in cnorm or cnorm in cn:
+                        return actual
+
+    # 4) Last resort: soft contains across all columns
+    for cnorm, actual in col_norm_to_actual.items():
+        if any(token in cnorm for token in [target] + list(target_alts)):
+            return actual
 
     return None
 
