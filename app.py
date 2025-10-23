@@ -325,55 +325,98 @@ def answer_with_rag(question: str):
 # -------------------------
 def _resolve_condition_phrase(df: pd.DataFrame, phrase: str):
     """
-    Try to infer a condition column + value/polarity from a natural-language phrase like:
-    - "customers who recommend the books"
-    - "users who do not recommend"
-    - "coupon used = yes"
-    Returns: (cond_col: str|None, explicit_value: str|None, polarity: str)
+    Infer a condition column + value/polarity from natural language like:
+      - "customers who recommend the books"
+      - "users who do not recommend"
+      - "coupon used = yes"
+      - "subscribers" / "subscription members"
+    Returns: (cond_col, explicit_value, polarity)
       - cond_col: matched column name or None
-      - explicit_value: lowercased string value if explicitly provided (e.g., "yes", "no"), else None
-      - polarity: "truthy" or "falsy" if the phrase implies a boolean polarity (no explicit value)
+      - explicit_value: string value if explicitly provided (e.g., "yes"), else None
+      - polarity: "truthy" or "falsy" if implied (no explicit value)
     """
-    p = phrase.strip().lower()
+    p_raw = phrase.strip()
+    p = p_raw.lower()
+
+    # 0) Strip common leading noise that can bias matching to customer_id
+    p = re.sub(r'^(customers?|users?|people)\s+(who|that|which)\s+', '', p).strip()
 
     # 1) If there's an explicit equality, pull it out first.
-    #    Handles: "=", "is", "equals"
+    #    Handles: '=', ' is ', ' equals '
     eq_match = re.search(r'(=| is | equals )\s*([^\s].+)$', p)
     explicit_value = None
     if eq_match:
         explicit_value = eq_match.group(2).strip().strip('"\'').lower()
-        # remove the rhs from the phrase to help column detection
         p = p[:eq_match.start()].strip()
 
-    # 2) Polarity (for boolean-like cols) e.g., "who do not", "who don't"
-    falsy_hints = (" do not ", " don't ", " not ", " no ")
+    # 2) Polarity hints for boolean-like columns
+    falsy_hints = (" do not ", " don't ", " not ", " no ", " non ", " without ")
     polarity = "truthy"
     if any(h in f" {p} " for h in falsy_hints):
         polarity = "falsy"
 
-    # 3) Try to detect the likely column from the whole phrase.
-    #    First pass: run alias matcher on the entire phrase.
+    # 3) HIGH-PRIORITY intent keywords → map directly to their likely columns first
+    #    These are predicate-like fields we *want* to pick for phrases like "who recommend".
+    intent_priority = [
+        ("recommend", ["recommend", "recommended", "recommends", "would recommend", "nps", "promoter"]),
+        ("coupon",    ["coupon", "promo", "code", "discount code", "coupon used", "used coupon"]),
+        ("subscription", ["subscription", "subscriber", "member", "membership", "loyalty"]),
+        ("repeat",    ["repeat", "returning", "again"]),
+        ("gift",      ["gift", "gifting", "gifted"]),
+        ("feedback",  ["feedback", "rating", "review", "satisfaction"]),
+    ]
+
+    # helper to try a concept directly
+    def _try_concept(concept: str):
+        # Reuse your alias matcher to resolve the column for a concept word
+        col = _find_col(df, concept)
+        return col
+
+    for concept, tokens in intent_priority:
+        if any(t in p for t in tokens):
+            col = _try_concept(concept)
+            if col:
+                return col, explicit_value, polarity
+
+    # 4) If no priority concept matched, try the whole phrase → column
     col = _find_col(df, p)
     if col:
         return col, explicit_value, polarity
 
-    # 4) Token scan fallback: try each token & 2-gram
+    # 5) Token scan fallback (prefer longer tokens)
     tokens = re.findall(r'[a-z0-9_%]+', p)
-    # prefer longer tokens first
     tokens_sorted = sorted(tokens, key=len, reverse=True)
     for tok in tokens_sorted:
         col = _find_col(df, tok)
         if col:
             return col, explicit_value, polarity
 
-    # Bigram scan
-    for i in range(len(tokens_sorted)-1):
-        bg = tokens_sorted[i] + " " + tokens_sorted[i+1]
+    # 6) Bigram fallback
+    for i in range(len(tokens_sorted) - 1):
+        bg = tokens_sorted[i] + " " + tokens_sorted[i + 1]
         col = _find_col(df, bg)
         if col:
             return col, explicit_value, polarity
 
     return None, explicit_value, polarity
+
+def _normalize_boolish(series: pd.Series) -> pd.Series:
+    """
+    Return a Series of strings normalized to boolean-like categories:
+      - truthy set: {'1','true','t','yes','y','recommended','recommend','member','used'}
+      - falsy set:  {'0','false','f','no','n','notrecommended','dontrecommend','do_not_recommend','unused'}
+    Non-matching values are returned as lower-cased strings (so we can still do explicit equality if needed).
+    """
+    s = series.astype(str).str.lower().str.strip()
+    truthy = {'1','true','t','yes','y','recommended','recommend','member','used'}
+    falsy  = {'0','false','f','no','n','notrecommended','dontrecommend','do_not_recommend','unused'}
+
+    def map_val(v):
+        if v in truthy: return '___truthy___'
+        if v in falsy:  return '___falsy___'
+        return v
+
+    return s.map(map_val)
 
 def handle_analytics_query(question: str, df: pd.DataFrame):
     """
@@ -427,10 +470,6 @@ def handle_analytics_query(question: str, df: pd.DataFrame):
         return True, msg
 
     # --- Conditional average/mean: natural language friendly ---
-    # Examples it handles:
-    #  - "average age among customers who recommend the books"
-    #  - "avg unit price for coupon used = yes"
-    #  - "mean net revenue where city = seattle"
     m_avg = re.search(
         r'\b(average|avg|mean)\b\s+(of\s+|for\s+)?(?P<metric>[\w %_]+?)\s+(among|for|where)\s+(?P<condphrase>.+)$',
         q
@@ -449,33 +488,29 @@ def handle_analytics_query(question: str, df: pd.DataFrame):
             return True, (f"I couldn't resolve the condition column from: `{cond_phrase}`.\n"
                           f"Columns: {list(df.columns)}")
 
-        series = df[cond_col].astype(str).str.lower().str.strip()
+        # Build filter
+        raw_series = df[cond_col]
+        norm_series = _normalize_boolish(raw_series)
 
-        # Build mask
         if explicit_val:
-            cond_mask = series.eq(explicit_val)
+            # explicit string equality (post-normalization)
+            target = explicit_val.lower().strip()
+            cond_mask = norm_series.eq(target) | raw_series.astype(str).str.lower().str.strip().eq(target)
         else:
-            # Truthy/falsy sets
-            truthy = {'1','true','t','yes','y','recommended','recommend','member','used'}
-            falsy  = {'0','false','f','no','n','notrecommended','dontrecommend','do_not_recommend','unused'}
-            cond_mask = series.isin(truthy if polarity == "truthy" else falsy)
+            flag = '___truthy___' if polarity == 'truthy' else '___falsy___'
+            cond_mask = norm_series.eq(flag)
 
-            # If nothing matched and the underlying column is boolean or 0/1, try numeric/boolean evaluation
+            # If nothing matched: try booleans or 0/1 numerics directly
             if not cond_mask.any():
-                if df[cond_col].dtype == bool:
-                    cond_mask = df[cond_col].fillna(False) if polarity=="truthy" else ~df[cond_col].fillna(False)
+                if raw_series.dtype == bool:
+                    cond_mask = raw_series.fillna(False) if polarity == "truthy" else ~raw_series.fillna(False)
                 else:
-                    # numeric 0/1 handling
                     try:
-                        num_series = pd.to_numeric(df[cond_col], errors='coerce')
-                        if polarity == "truthy":
-                            cond_mask = num_series.fillna(0) != 0
-                        else:
-                            cond_mask = num_series.fillna(0) == 0
+                        num_series = pd.to_numeric(raw_series, errors='coerce').fillna(0)
+                        cond_mask = (num_series != 0) if polarity == "truthy" else (num_series == 0)
                     except Exception:
                         pass
 
-        # Compute metric
         metric_vals = pd.to_numeric(df.loc[cond_mask, metric_col], errors='coerce').dropna()
         n = metric_vals.shape[0]
         if n == 0:
@@ -488,7 +523,6 @@ def handle_analytics_query(question: str, df: pd.DataFrame):
                f"**{mean_val:.2f}** (n={n})")
         st.write(msg)
 
-        # Optional visualization
         try:
             fig = px.histogram(metric_vals, nbins=20, title=f"Distribution of {metric_col} (filtered)")
             st.plotly_chart(fig, use_container_width=True)
