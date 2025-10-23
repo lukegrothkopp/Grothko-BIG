@@ -480,7 +480,7 @@ with st.sidebar:
             df = pd.read_csv(uploaded_file)
             st.session_state.df = df
             st.session_state.data_loaded = True
-            st.success(f"✅ Data loaded: {df.shape[0]} rows, {df.shape[1]} columns}")
+            st.success(f"✅ Data loaded: {df.shape[0]} rows, {df.shape[1]} columns")
             if st.session_state.vectorstore is None:
                 with st.spinner("Setting up AI system..."):
                     if setup_rag_system(df, api_key):
