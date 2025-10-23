@@ -323,6 +323,58 @@ def answer_with_rag(question: str):
 # -------------------------
 # Structured Analytics Engine
 # -------------------------
+def _resolve_condition_phrase(df: pd.DataFrame, phrase: str):
+    """
+    Try to infer a condition column + value/polarity from a natural-language phrase like:
+    - "customers who recommend the books"
+    - "users who do not recommend"
+    - "coupon used = yes"
+    Returns: (cond_col: str|None, explicit_value: str|None, polarity: str)
+      - cond_col: matched column name or None
+      - explicit_value: lowercased string value if explicitly provided (e.g., "yes", "no"), else None
+      - polarity: "truthy" or "falsy" if the phrase implies a boolean polarity (no explicit value)
+    """
+    p = phrase.strip().lower()
+
+    # 1) If there's an explicit equality, pull it out first.
+    #    Handles: "=", "is", "equals"
+    eq_match = re.search(r'(=| is | equals )\s*([^\s].+)$', p)
+    explicit_value = None
+    if eq_match:
+        explicit_value = eq_match.group(2).strip().strip('"\'').lower()
+        # remove the rhs from the phrase to help column detection
+        p = p[:eq_match.start()].strip()
+
+    # 2) Polarity (for boolean-like cols) e.g., "who do not", "who don't"
+    falsy_hints = (" do not ", " don't ", " not ", " no ")
+    polarity = "truthy"
+    if any(h in f" {p} " for h in falsy_hints):
+        polarity = "falsy"
+
+    # 3) Try to detect the likely column from the whole phrase.
+    #    First pass: run alias matcher on the entire phrase.
+    col = _find_col(df, p)
+    if col:
+        return col, explicit_value, polarity
+
+    # 4) Token scan fallback: try each token & 2-gram
+    tokens = re.findall(r'[a-z0-9_%]+', p)
+    # prefer longer tokens first
+    tokens_sorted = sorted(tokens, key=len, reverse=True)
+    for tok in tokens_sorted:
+        col = _find_col(df, tok)
+        if col:
+            return col, explicit_value, polarity
+
+    # Bigram scan
+    for i in range(len(tokens_sorted)-1):
+        bg = tokens_sorted[i] + " " + tokens_sorted[i+1]
+        col = _find_col(df, bg)
+        if col:
+            return col, explicit_value, polarity
+
+    return None, explicit_value, polarity
+
 def handle_analytics_query(question: str, df: pd.DataFrame):
     """
     Detect and execute common analytics directly on the dataframe.
@@ -374,46 +426,77 @@ def handle_analytics_query(question: str, df: pd.DataFrame):
         except Exception: pass
         return True, msg
 
-    # --- Conditional average/mean: "average X among/for/where Y [= Z]" ---
-    m_avg=re.search(
-        r'\b(average|avg|mean)\b\s+(of\s+|for\s+)?(?P<metric>[\w %_]+?)\s+(among|for|where)\s+(?P<condcol>[\w %_]+?)(\s*(=|is|equals)\s*(?P<condval>[\w %_]+))?$',
+    # --- Conditional average/mean: natural language friendly ---
+    # Examples it handles:
+    #  - "average age among customers who recommend the books"
+    #  - "avg unit price for coupon used = yes"
+    #  - "mean net revenue where city = seattle"
+    m_avg = re.search(
+        r'\b(average|avg|mean)\b\s+(of\s+|for\s+)?(?P<metric>[\w %_]+?)\s+(among|for|where)\s+(?P<condphrase>.+)$',
         q
     )
     if m_avg:
-        raw_metric=m_avg.group('metric').strip()
-        raw_condcol=m_avg.group('condcol').strip()
-        raw_condval=(m_avg.group('condval') or '').strip()
-        metric_col=_find_col(df, raw_metric)
-        cond_col=_find_col(df, raw_condcol)
-        if not metric_col or not cond_col:
-            return True, (f"I couldn't resolve columns.\nMetric: `{metric_col or raw_metric}` | "
-                          f"Condition column: `{cond_col or raw_condcol}`.\nColumns: {list(df.columns)}")
+        raw_metric = m_avg.group('metric').strip()
+        cond_phrase = m_avg.group('condphrase').strip()
 
-        series=df[cond_col]
-        if raw_condval:
-            target=str(raw_condval).strip().lower()
-            cond_mask=series.astype(str).str.lower().str.strip().eq(target)
+        metric_col = _find_col(df, raw_metric)
+        if not metric_col:
+            return True, (f"I couldn't resolve the requested metric column.\n"
+                          f"Metric: `{raw_metric}`\nColumns: {list(df.columns)}")
+
+        cond_col, explicit_val, polarity = _resolve_condition_phrase(df, cond_phrase)
+        if not cond_col:
+            return True, (f"I couldn't resolve the condition column from: `{cond_phrase}`.\n"
+                          f"Columns: {list(df.columns)}")
+
+        series = df[cond_col].astype(str).str.lower().str.strip()
+
+        # Build mask
+        if explicit_val:
+            cond_mask = series.eq(explicit_val)
         else:
-            truthy={'1','true','t','yes','y','recommended','recommend','member','used'}
-            cond_mask=series.astype(str).str.lower().str.strip().isin(truthy)
-            if not cond_mask.any() and series.dtype==bool:
-                cond_mask=series.fillna(False)
+            # Truthy/falsy sets
+            truthy = {'1','true','t','yes','y','recommended','recommend','member','used'}
+            falsy  = {'0','false','f','no','n','notrecommended','dontrecommend','do_not_recommend','unused'}
+            cond_mask = series.isin(truthy if polarity == "truthy" else falsy)
 
-        metric_vals=pd.to_numeric(df.loc[cond_mask, metric_col], errors='coerce').dropna()
-        n=metric_vals.shape[0]
-        if n==0:
-            return True, (f"No matching rows where **{cond_col}**"
-                          f"{' = ' + raw_condval if raw_condval else ' is truthy'}.")
-        mean_val=metric_vals.mean()
-        msg=(f"**Average {metric_col}** for rows where **{cond_col}**"
-             f"{' = ' + raw_condval if raw_condval else ' is truthy'}: **{mean_val:.2f}** (n={n})")
+            # If nothing matched and the underlying column is boolean or 0/1, try numeric/boolean evaluation
+            if not cond_mask.any():
+                if df[cond_col].dtype == bool:
+                    cond_mask = df[cond_col].fillna(False) if polarity=="truthy" else ~df[cond_col].fillna(False)
+                else:
+                    # numeric 0/1 handling
+                    try:
+                        num_series = pd.to_numeric(df[cond_col], errors='coerce')
+                        if polarity == "truthy":
+                            cond_mask = num_series.fillna(0) != 0
+                        else:
+                            cond_mask = num_series.fillna(0) == 0
+                    except Exception:
+                        pass
+
+        # Compute metric
+        metric_vals = pd.to_numeric(df.loc[cond_mask, metric_col], errors='coerce').dropna()
+        n = metric_vals.shape[0]
+        if n == 0:
+            pretty_val = (f"= {explicit_val}" if explicit_val else (" is truthy" if polarity=="truthy" else " is falsy"))
+            return True, (f"No matching rows for **{cond_col}** {pretty_val}.")
+
+        mean_val = metric_vals.mean()
+        pretty_val = (f"= {explicit_val}" if explicit_val else (" is truthy" if polarity=="truthy" else " is falsy"))
+        msg = (f"**Average {metric_col}** for rows where **{cond_col}** {pretty_val}: "
+               f"**{mean_val:.2f}** (n={n})")
         st.write(msg)
-        try:
-            fig=px.histogram(metric_vals, nbins=20, title=f"Distribution of {metric_col} (filtered)")
-            st.plotly_chart(fig, use_container_width=True)
-        except Exception: pass
-        return True, msg
 
+        # Optional visualization
+        try:
+            fig = px.histogram(metric_vals, nbins=20, title=f"Distribution of {metric_col} (filtered)")
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception:
+            pass
+
+        return True, msg
+        
     # --- "top 3 insights" ---
     if re.search(r'\btop\s*3\s*insight', q):
         insights=[]
