@@ -13,9 +13,20 @@ import numpy as np
 import os
 
 # Page configuration
+from pathlib import Path
+import os
+
+# Resolve repo-relative path to the logo
+REPO_DIR = Path(__file__).parent
+LOGO_PATH = REPO_DIR / "assets" / "header_logo.png"   # <-- your file in the repo
+
+# Helper: return a usable icon value for Streamlit (path if exists, else emoji)
+def page_icon_value():
+    return str(LOGO_PATH) if LOGO_PATH.exists() else "📈"
+
 st.set_page_config(
     page_title="Grothko Consulting: B.I.G - Business Intelligence Generator",
-    page_icon="📈",
+    page_icon=page_icon_value(),
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -593,7 +604,11 @@ def handle_analytics_query(question: str, df: pd.DataFrame):
 # Sidebar
 # -------------------------
 with st.sidebar:
-    st.image("https://via.placeholder.com/150x50?text=InsightForge", width=150)
+    if LOGO_PATH.exists():
+        st.sidebar.image(str(LOGO_PATH), width=150)
+    else:
+        st.sidebar.markdown("### GROTHKO CONSULTING")
+
     st.title("Navigation")
 
     # API Key input (prefer secrets)
