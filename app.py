@@ -40,9 +40,8 @@ for k, v in {
     if k not in st.session_state:
         st.session_state[k] = v
 
-# ---- Sidebar ----
+# --- Sidebar (no logo) ---
 with st.sidebar:
-    st.image("assets/logo.svg", width=160)
     st.title("InsightForge")
     st.caption("AI-Powered Business Intelligence")
 
@@ -58,22 +57,21 @@ with st.sidebar:
     up = st.file_uploader("Upload a CSV dataset", type=["csv"])
     if up is not None:
         try:
+            import pandas as pd
             df = pd.read_csv(up)
             st.session_state.df = df
             st.success(f"Loaded {df.shape[0]:,} rows × {df.shape[1]} cols")
         except Exception as e:
             st.error(f"Load error: {e}")
 
-    if st.session_state.df is not None and st.button("⚙️ Build/Refresh AI Index"):
+    if st.session_state.get("df") is not None and st.button("⚙️ Build/Refresh AI Index"):
+        from src.rag import build_index
         with st.spinner("Building local RAG index..."):
             try:
                 st.session_state.rag_index = build_index(st.session_state.df)
                 st.success("RAG index ready.")
             except Exception as e:
                 st.error(f"RAG build failed: {e}")
-
-st.markdown('<div class="main-header">📊 InsightForge – AI Business Intelligence</div>', unsafe_allow_html=True)
-st.caption("OpenAI + Streamlit + FAISS • Local RAG over your data profile")
 
 # ---- Pages ----
 if page == "Dashboard":
