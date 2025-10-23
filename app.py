@@ -8,7 +8,7 @@ from datetime import datetime
 from langchain_openai import ChatOpenAI
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
 import numpy as np
@@ -106,7 +106,7 @@ def create_data_summary(df):
 
 # Function to setup RAG system
 def setup_rag_system(df, api_key):
-    """Setup RAG system with OpenAI and HuggingFace Embeddings"""
+    """Setup RAG system with OpenAI Embeddings"""
     try:
         os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
    
@@ -133,13 +133,12 @@ def setup_rag_system(df, api_key):
         )
         chunks = text_splitter.split_text(data_insights)
         
-        # Create embeddings using HuggingFace (FREE and local)
-        embeddings = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2",
-            model_kwargs={'device': 'cpu'},
-            encode_kwargs={'normalize_embeddings': True}
+        # Create embeddings using OpenAI (fast, no big downloads)
+        embeddings = OpenAIEmbeddings(
+            model=st.secrets.get("OPENAI_EMBED_MODEL", "text-embedding-3-small"),
+            api_key=st.secrets["OPENAI_API_KEY"],
         )
-        
+
         # Create vector store
         vectorstore = FAISS.from_texts(chunks, embeddings)
         st.session_state.vectorstore = vectorstore
@@ -227,7 +226,7 @@ with st.sidebar:
         except Exception as e:
             st.error(f"Error loading file: {e}")
     elif uploaded_file is not None and not api_key:
-        st.warning("⚠️ Please enter your Google API Key first")
+        st.warning("⚠️ Please enter your API Key first")
 
 # Main content
 st.markdown('<h1 class="main-header">📊 InsightForge - AI-Powered Business Intelligence</h1>', unsafe_allow_html=True)
@@ -282,13 +281,12 @@ if page == "Dashboard":
         st.dataframe(df.describe(), use_container_width=True)
         
     else:
-        st.info("👈 Please upload a dataset and enter your Google API Key to get started.")
+        st.info("👈 Please upload a dataset to get started.")
         st.markdown("""
         ### Getting Started
-        1. Get your Google API Key from [Google AI Studio](https://makersuite.google.com/app/apikey)
-        2. Enter the API key in the sidebar
-        3. Upload your CSV file
-        4. Explore AI-powered insights!
+        1. Enter the API key in Streamlit Secrets
+        2. Upload your CSV file
+        3. Explore AI-powered insights!
         """)
 
 # Data Analysis Page
@@ -477,7 +475,7 @@ elif page == "Visualizations":
 st.divider()
 st.markdown("""
 <div style='text-align: center; color: #666;'>
-    <p>InsightForge - AI-Powered Business Intelligence with Google Gemini | Built with Streamlit & LangChain</p>
+    <p>InsightForge - AI-Powered Business Intelligence with OpenAI | Built with Streamlit & LangChain</p>
 </div>
 """, unsafe_allow_html=True)
 
