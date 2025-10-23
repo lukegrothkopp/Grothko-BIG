@@ -796,7 +796,7 @@ elif page == "Visualizations":
 st.divider()
 st.markdown("""
 <div style='text-align: center; color: #666;'>
-    <p>InsightForge - AI-Powered Business Intelligence | Built with Streamlit & LangChain (OpenAI)</p>
+    <p>Grothko Consulting B.I.G - Business Intelligence Generator</p>
 </div>
 """, unsafe_allow_html=True)
 
