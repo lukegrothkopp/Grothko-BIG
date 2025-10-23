@@ -710,7 +710,7 @@ elif page == "Data Analysis":
 
 # AI Assistant Page
 elif page == "AI Assistant":
-    st.header("🤖 AI-Powered Business Intelligence Assistant")
+    st.header("🧬 AI Assistant")
     if st.session_state.data_loaded and api_key and st.session_state.retriever and st.session_state.llm:
         st.info("💡 Ask questions about your data. I can compute correlations, conditional averages, top insights, and basic trends.")
         for m in st.session_state.chat_history:
