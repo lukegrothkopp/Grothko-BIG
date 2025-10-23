@@ -1,4 +1,4 @@
-# InsightForge
+# Grothko Consulting BIG (Business Intelligence Generator)
 
 A fresh, working build with:
 - Persistent chat memory per user
