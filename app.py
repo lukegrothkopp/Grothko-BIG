@@ -25,7 +25,7 @@ def page_icon_value():
     return str(LOGO_PATH) if LOGO_PATH.exists() else "📈"
 
 st.set_page_config(
-    page_title="Grothko Consulting: "BIG" (Business Intelligence Generator)",
+    page_title="Grothko Consulting's Business Intelligence Generator, AKA BIG)",
     page_icon=page_icon_value(),
     layout="wide",
     initial_sidebar_state="expanded"
