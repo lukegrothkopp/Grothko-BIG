@@ -1,7 +1,8 @@
-streamlit==1.39.0
-pandas==2.2.2
-plotly==5.24.1
-numpy==2.0.2
-faiss-cpu==1.8.0.post1
-tiktoken==0.7.0
-openai==1.51.2
+streamlit>=1.37
+pandas>=2.1
+plotly>=5.22
+numpy>=1.26
+faiss-cpu>=1.8
+openai>=1.40
+python-dotenv>=1.0
+
